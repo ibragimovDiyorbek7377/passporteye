@@ -1,30 +1,26 @@
 """
-Customs-Grade Passport Scanner - FastAPI Backend
-ICAO 9303 TD3 Standard Compliant MRZ Parser with Strict Validation
-
-Author: Senior Lead Engineer - Computer Vision & GovTech
-Target: Customs Committee of Uzbekistan
+Telegram Mini App Backend - Passport MRZ Scanner using Google Gemini API
+Production-ready FastAPI application with round-robin key rotation
 """
 
 import io
 import os
+import time
+import base64
 import hashlib
-import cv2
-import numpy as np
 from datetime import datetime
 from typing import Dict, Optional, List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from passporteye import read_mrz
-from PIL import Image, ImageEnhance, ImageOps
-import time
+import google.generativeai as genai
+from PIL import Image
 
 app = FastAPI(
-    title="Bojxona Passport Scanner",
-    description="Customs-Grade ICAO 9303 TD3 Passport Scanner",
-    version="1.0.0"
+    title="Passport Scanner with Gemini AI",
+    description="Telegram Mini App for Passport MRZ Scanning",
+    version="2.0.0"
 )
 
 # CORS middleware for Telegram Mini App
@@ -40,256 +36,195 @@ app.add_middleware(
 templates = Jinja2Templates(directory="templates")
 
 # ============================================
-# CYBERSECURITY FEATURES
+# GEMINI API MANAGER WITH KEY ROTATION
 # ============================================
 
-# Rate limiting storage (in-memory for simplicity)
-request_timestamps = {}
-RATE_LIMIT_WINDOW = 60  # seconds
-MAX_REQUESTS_PER_WINDOW = 10
-
-# File size limits (10MB max)
-MAX_FILE_SIZE = 10 * 1024 * 1024
-
-# Allowed file types
-ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png']
-ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png']
-
-
-def check_rate_limit(client_id: str) -> bool:
+class GeminiScanner:
     """
-    Simple rate limiting: Max 10 requests per 60 seconds per client
+    Google Gemini API Manager with Round-Robin Key Rotation
+    Automatically switches to next key on quota/rate limit errors
     """
-    current_time = time.time()
 
-    if client_id not in request_timestamps:
-        request_timestamps[client_id] = []
-
-    # Remove old timestamps outside the window
-    request_timestamps[client_id] = [
-        ts for ts in request_timestamps[client_id]
-        if current_time - ts < RATE_LIMIT_WINDOW
+    KEYS = [
+        "AIzaSyCN0V0joAnErmhLMFwFMegUJ9RkWtuxCvE",
+        "AIzaSyCqDUJPZDtoG6dNryRmp4kDqY1jtx0RPJE",
+        "AIzaSyBC3dXFbl5UAzOyWOHcFrYZt6snyPreZbU",
+        "AIzaSyAoNsY7ZwOODYuMzUjIZ5McWnxRTVdvpNk",
+        "AIzaSyAOsDzsTtHd1RO29pDZcGQ2ECps6XfPrCA",
+        "AIzaSyAp4MDPxjD23Fo5bUI7SD3HhWBzy2eZLuE",
+        "AIzaSyBv8bBb3Tv6gRSWNfEu3bnxBYwR4_8DcRI",
+        "AIzaSyAyR6N_WXX6H1a67aTQlb66P8ytVRjvmTo",
+        "AIzaSyBYlJ7vzzxSoFy1sGuMgPOtSSWW5Mlmw8M"
     ]
 
-    # Check if limit exceeded
-    if len(request_timestamps[client_id]) >= MAX_REQUESTS_PER_WINDOW:
-        return False
+    def __init__(self):
+        self.current_key_index = 0
+        self.total_keys = len(self.KEYS)
+        self.configure_current_key()
+        print(f"🔑 Gemini Scanner initialized with {self.total_keys} API keys")
 
-    # Add current request
-    request_timestamps[client_id].append(current_time)
-    return True
+    def configure_current_key(self):
+        """Configure Gemini with current API key"""
+        api_key = self.KEYS[self.current_key_index]
+        genai.configure(api_key=api_key)
+        print(f"🔧 Using API key #{self.current_key_index + 1}")
 
+    def rotate_key(self):
+        """Rotate to next API key (Round-Robin)"""
+        self.current_key_index = (self.current_key_index + 1) % self.total_keys
+        self.configure_current_key()
+        print(f"🔄 Rotated to API key #{self.current_key_index + 1}")
 
-def validate_image_file(file: UploadFile, contents: bytes) -> None:
-    """
-    Validate uploaded file for security
-    - Check file size
-    - Check file extension
-    - Validate it's actually an image
-    """
-    # Check file size
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024*1024)}MB"
-        )
+    def scan_passport_mrz(self, image_bytes: bytes, max_retries: int = 3) -> Dict:
+        """
+        Scan passport MRZ using Gemini Vision API
+        Automatically retries with different API keys on quota errors
+        """
+        attempts = 0
+        last_error = None
 
-    # Check extension
-    if file.filename:
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
-            )
+        while attempts < max_retries:
+            try:
+                # Load image
+                image = Image.open(io.BytesIO(image_bytes))
 
-    # Validate it's actually an image using PIL
-    try:
-        img = Image.open(io.BytesIO(contents))
-        img.verify()  # Verify it's not corrupted
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or corrupted image file"
-        )
+                # Initialize Gemini Vision model
+                model = genai.GenerativeModel('gemini-1.5-flash')
 
+                # Optimized prompt for MRZ extraction
+                prompt = """You are an expert passport MRZ (Machine Readable Zone) scanner.
 
-# ============================================
-# IMAGE PROCESSING FOR BETTER OCR
-# ============================================
+Analyze this passport image and extract ONLY the MRZ data (the two lines of text at the bottom of the passport).
 
-def opencv_preprocess_for_mrz(image_bytes: bytes) -> Optional[bytes]:
-    """
-    Use OpenCV to preprocess image specifically for MRZ OCR
-    Returns enhanced image bytes or None if preprocessing fails
-    """
-    try:
-        # Convert bytes to numpy array
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+CRITICAL REQUIREMENTS:
+1. Extract exactly 2 lines, each line must be EXACTLY 44 characters
+2. Preserve ALL characters including "<" symbols
+3. Do NOT add spaces or modify characters
+4. The MRZ follows ICAO 9303 TD3 format
 
-        if img is None:
-            return None
+Format your response as JSON with this EXACT structure:
+{
+  "line1": "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<",
+  "line2": "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+}
 
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+Rules:
+- Line 1 format: Document type (P) + Country code + Name (surname<<given<names)
+- Line 2 format: Passport number + Check digit + Nationality + DOB + Sex + Expiry + Personal number
+- Each line MUST be exactly 44 characters
+- Use "<" for filler spaces
+- Return ONLY valid JSON, no markdown, no explanations
 
-        # Apply bilateral filter (reduces noise, keeps edges sharp)
-        filtered = cv2.bilateralFilter(gray, 5, 50, 50)
+If you cannot detect the MRZ clearly, return:
+{"error": "MRZ_NOT_FOUND"}"""
 
-        # Adaptive thresholding for better MRZ contrast
-        thresh = cv2.adaptiveThreshold(
-            filtered, 255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            15, 10
-        )
+                print(f"🤖 Sending request to Gemini API (key #{self.current_key_index + 1})...")
 
-        # Encode back to bytes (PNG for lossless)
-        success, buffer = cv2.imencode('.png', thresh)
-        if success:
-            return buffer.tobytes()
+                # Send to Gemini
+                response = model.generate_content([prompt, image])
 
-        return None
-    except Exception as e:
-        print(f"   ⚠️ OpenCV preprocessing failed: {e}")
-        return None
+                if not response or not response.text:
+                    raise Exception("Empty response from Gemini API")
 
+                print(f"✅ Received response from Gemini")
 
-def enhance_image_for_ocr(image: Image.Image) -> List[Image.Image]:
-    """
-    Create optimized versions for MRZ OCR
-    Returns 5 best strategies for passport scanning
-    """
-    images = []
+                # Parse response
+                result = self._parse_gemini_response(response.text)
 
-    # Strategy 1: Original image (PassportEye's default)
-    images.append(image.copy())
+                if "error" in result:
+                    raise Exception(result["error"])
 
-    # Strategy 2: Auto-orient using EXIF (fixes rotated photos)
-    try:
-        oriented = ImageOps.exif_transpose(image)
-        if oriented is not None and oriented != image:
-            images.append(oriented)
-    except:
-        pass
+                # Validate MRZ format
+                if not self._validate_mrz_format(result):
+                    raise Exception("Invalid MRZ format from Gemini")
 
-    # Strategy 3: Enhanced contrast (better for faded passports)
-    try:
-        enhancer = ImageEnhance.Contrast(image)
-        images.append(enhancer.enhance(2.0))
-    except:
-        pass
+                print(f"✅ MRZ extracted successfully")
+                return result
 
-    # Strategy 4: High contrast grayscale (BEST for MRZ)
-    try:
-        gray = ImageOps.grayscale(image)
-        enhancer = ImageEnhance.Contrast(gray)
-        images.append(enhancer.enhance(2.5))
-    except:
-        pass
+            except Exception as e:
+                error_msg = str(e).lower()
+                last_error = e
+                attempts += 1
 
-    # Strategy 5: Sharpened + contrast (for blurry photos)
-    try:
-        enhancer = ImageEnhance.Sharpness(image)
-        sharpened = enhancer.enhance(2.5)
-        contrast_enhancer = ImageEnhance.Contrast(sharpened)
-        images.append(contrast_enhancer.enhance(1.8))
-    except:
-        pass
+                print(f"❌ Attempt {attempts} failed: {str(e)[:100]}")
 
-    return images
-
-
-def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
-    """
-    Try multiple OCR strategies to detect MRZ
-    Uses BOTH PIL and OpenCV preprocessing for maximum success rate
-    """
-    # Load image
-    try:
-        image = Image.open(io.BytesIO(contents))
-        print(f"📐 Image loaded: {image.size[0]}×{image.size[1]}, Format: {image.format}, Mode: {image.mode}")
-    except Exception as e:
-        print(f"❌ Failed to load image: {e}")
-        return None
-
-    # Strategy 0: Try OpenCV preprocessing FIRST (best for MRZ)
-    print(f"🔧 Strategy #0: OpenCV MRZ preprocessing")
-    opencv_preprocessed = opencv_preprocess_for_mrz(contents)
-    if opencv_preprocessed:
-        try:
-            print(f"   ✓ OpenCV preprocessing successful")
-            mrz = read_mrz(io.BytesIO(opencv_preprocessed))
-
-            if mrz is not None and hasattr(mrz, 'mrz_text'):
-                mrz_len = len(mrz.mrz_text) if mrz.mrz_text else 0
-                print(f"   ✓ MRZ text length: {mrz_len} chars")
-                if mrz_len >= 88:
-                    print(f"✅ MRZ detected using OpenCV preprocessing!")
-                    print(f"   MRZ Preview: {mrz.mrz_text[:44]}...")
-                    return mrz
+                # Check if error is related to quota/rate limit
+                if "429" in error_msg or "quota" in error_msg or "rate limit" in error_msg:
+                    print(f"⚠️ Quota/Rate limit error detected, rotating key...")
+                    self.rotate_key()
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                elif "503" in error_msg or "500" in error_msg:
+                    print(f"⚠️ Server error, rotating key and retrying...")
+                    self.rotate_key()
+                    time.sleep(1)
+                    continue
                 else:
-                    print(f"   ✗ MRZ too short")
-            else:
-                print(f"   ✗ No valid MRZ from OpenCV")
-        except Exception as e:
-            print(f"   ✗ OpenCV strategy failed: {e}")
+                    # Other errors - still try rotating
+                    if attempts < max_retries:
+                        print(f"⚠️ Unknown error, trying next key...")
+                        self.rotate_key()
+                        time.sleep(0.5)
+                    continue
 
-    # Get multiple PIL-enhanced versions
-    enhanced_images = enhance_image_for_ocr(image)
-    print(f"🔄 Generated {len(enhanced_images)} PIL strategies")
+        # All retries failed
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to scan passport after {max_retries} attempts. Last error: {str(last_error)}"
+        )
 
-    # Try OCR on each PIL version
-    for idx, img in enumerate(enhanced_images):
+    def _parse_gemini_response(self, response_text: str) -> Dict:
+        """Parse Gemini response and extract JSON"""
+        import json
+        import re
+
+        # Clean response (remove markdown code blocks if present)
+        cleaned = response_text.strip()
+
+        # Remove markdown code blocks
+        cleaned = re.sub(r'^```json\s*', '', cleaned)
+        cleaned = re.sub(r'^```\s*', '', cleaned)
+        cleaned = re.sub(r'\s*```$', '', cleaned)
+        cleaned = cleaned.strip()
+
         try:
-            print(f"   Strategy #{idx + 1}: {img.size[0]}×{img.size[1]}, mode={img.mode}")
+            result = json.loads(cleaned)
+            return result
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parse error: {e}")
+            print(f"Response text: {response_text[:200]}")
+            raise Exception("Invalid JSON response from Gemini")
 
-            # Convert back to bytes
-            img_bytes = io.BytesIO()
-            img.save(img_bytes, format='PNG')
-            img_bytes.seek(0)
+    def _validate_mrz_format(self, result: Dict) -> bool:
+        """Validate MRZ format (2 lines, 44 chars each)"""
+        if "line1" not in result or "line2" not in result:
+            print(f"❌ Missing line1 or line2 in response")
+            return False
 
-            # Try PassportEye OCR
-            mrz = read_mrz(img_bytes)
+        line1 = result["line1"]
+        line2 = result["line2"]
 
-            if mrz is not None:
-                print(f"   ✓ PassportEye returned result")
-                if hasattr(mrz, 'mrz_text'):
-                    mrz_len = len(mrz.mrz_text) if mrz.mrz_text else 0
-                    print(f"   ✓ MRZ text length: {mrz_len} chars")
-                    if mrz_len >= 88:
-                        print(f"✅ MRZ detected using PIL strategy #{idx + 1}")
-                        print(f"   MRZ Preview: {mrz.mrz_text[:44]}...")
-                        return mrz
-                    else:
-                        print(f"   ✗ MRZ too short (need 88+)")
-                else:
-                    print(f"   ✗ No mrz_text attribute")
-            else:
-                print(f"   ✗ PassportEye returned None")
+        if len(line1) != 44:
+            print(f"❌ Line1 length is {len(line1)}, expected 44")
+            return False
 
-        except Exception as e:
-            print(f"   ✗ Strategy #{idx + 1} failed: {type(e).__name__}: {str(e)[:100]}")
-            continue
+        if len(line2) != 44:
+            print(f"❌ Line2 length is {len(line2)}, expected 44")
+            return False
 
-    print(f"❌ All strategies failed (1 OpenCV + {len(enhanced_images)} PIL)")
-    return None
+        return True
 
 
 # ============================================
-# ICAO 9303 VALIDATOR
+# ICAO 9303 MRZ PARSER
 # ============================================
 
-class ICAOValidator:
-    """
-    ICAO 9303 Checksum Validator
-    Uses Modulus 10 algorithm with weights 7, 3, 1
-    """
+class MRZParser:
+    """Parse and validate ICAO 9303 TD3 format MRZ"""
 
     @staticmethod
     def char_to_value(char: str) -> int:
-        """Convert MRZ character to numeric value for checksum calculation"""
+        """Convert MRZ character to numeric value for checksum"""
         if char.isdigit():
             return int(char)
         elif char.isalpha():
@@ -301,16 +236,12 @@ class ICAOValidator:
 
     @staticmethod
     def calculate_checksum(data: str) -> int:
-        """
-        Calculate ICAO 9303 checksum
-        Formula: Sum of (value * weight) mod 10
-        Weights cycle: 7, 3, 1
-        """
+        """Calculate ICAO 9303 checksum using mod 10 with weights 7,3,1"""
         weights = [7, 3, 1]
         total = 0
 
         for i, char in enumerate(data):
-            value = ICAOValidator.char_to_value(char)
+            value = MRZParser.char_to_value(char)
             weight = weights[i % 3]
             total += value * weight
 
@@ -322,172 +253,175 @@ class ICAOValidator:
         if not check_digit.isdigit():
             return False
 
-        calculated = ICAOValidator.calculate_checksum(data)
+        calculated = MRZParser.calculate_checksum(data)
         expected = int(check_digit)
 
         return calculated == expected
 
     @staticmethod
-    def validate_date(date_str: str) -> bool:
-        """Validate date format YYMMDD"""
-        if len(date_str) != 6 or not date_str.isdigit():
-            return False
-
-        try:
-            year = int(date_str[0:2])
-            month = int(date_str[2:4])
-            day = int(date_str[4:6])
-
-            # Basic range checks
-            if month < 1 or month > 12:
-                return False
-            if day < 1 or day > 31:
-                return False
-
-            return True
-        except ValueError:
-            return False
-
-
-# ============================================
-# MRZ PARSER
-# ============================================
-
-class MRZParser:
-    """
-    ICAO 9303 TD3 Format MRZ Parser
-    TD3: Machine-readable travel documents (44 characters per line, 2 lines)
-    Used for passports
-    """
-
-    def __init__(self):
-        self.validator = ICAOValidator()
-
-    def parse_td3_line1(self, line: str) -> Dict:
-        """
-        Parse TD3 Line 1 (44 characters)
-        Format: P<UTONATIONS<<SURNAME<<GIVEN<NAMES<<<<<<<<<
-        """
-        if len(line) != 44:
-            raise ValueError(f"Line 1 must be 44 characters, got {len(line)}")
-
-        doc_type = line[0]
-        country_code = line[2:5].replace('<', '')
-
-        # Parse names (position 5-44)
-        names_section = line[5:44].replace('<', ' ').strip()
-        name_parts = [part for part in names_section.split('  ') if part]
-
-        surname = name_parts[0] if name_parts else ""
-        given_names = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ""
-
-        return {
-            "document_type": doc_type,
-            "country_code": country_code,
-            "surname": surname.strip(),
-            "given_names": given_names.strip()
-        }
-
-    def parse_td3_line2(self, line: str) -> Dict:
-        """
-        Parse TD3 Line 2 (44 characters)
-        Extracts: Passport #, DOB, Sex, Expiry, JSHSHIR/PNFL
-        """
-        if len(line) != 44:
-            raise ValueError(f"Line 2 must be 44 characters, got {len(line)}")
-
-        # Extract fields
-        passport_number = line[0:9].replace('<', '').strip()
-        passport_check = line[9]
-
-        nationality = line[10:13].replace('<', '').strip()
-
-        dob = line[13:19]
-        dob_check = line[19]
-
-        sex = line[20].replace('<', '')
-
-        expiry = line[21:27]
-        expiry_check = line[27]
-
-        # CRITICAL: Personal Number (JSHSHIR/PNFL) for Uzbekistan
-        personal_number = line[28:42].replace('<', '').strip()
-        personal_check = line[42]
-
-        composite_check = line[43]
-
-        # Validate checksums
-        validations = {
-            "passport_number_valid": self.validator.validate_checksum(line[0:9], passport_check),
-            "dob_valid": self.validator.validate_checksum(dob, dob_check),
-            "expiry_valid": self.validator.validate_checksum(expiry, expiry_check),
-            "personal_number_valid": self.validator.validate_checksum(line[28:42], personal_check),
-        }
-
-        # Composite check
-        composite_data = line[0:10] + line[13:20] + line[21:43]
-        validations["composite_valid"] = self.validator.validate_checksum(composite_data, composite_check)
-
-        # Validate dates
-        validations["dob_format_valid"] = self.validator.validate_date(dob)
-        validations["expiry_format_valid"] = self.validator.validate_date(expiry)
-
-        return {
-            "passport_number": passport_number,
-            "nationality": nationality,
-            "date_of_birth": self._format_date(dob),
-            "date_of_birth_raw": dob,
-            "sex": sex if sex in ['M', 'F'] else 'Unknown',
-            "date_of_expiry": self._format_date(expiry),
-            "date_of_expiry_raw": expiry,
-            "personal_number": personal_number,  # JSHSHIR/PNFL
-            "validations": validations
-        }
-
-    def _format_date(self, yymmdd: str) -> str:
+    def format_date(yymmdd: str) -> str:
         """Convert YYMMDD to DD.MM.YYYY format"""
-        if len(yymmdd) != 6:
+        if len(yymmdd) != 6 or not yymmdd.isdigit():
             return yymmdd
 
         yy = int(yymmdd[0:2])
         mm = yymmdd[2:4]
         dd = yymmdd[4:6]
 
-        # Determine century (assume 20xx for years < 50, 19xx otherwise)
+        # Determine century (20xx for years < 50, 19xx otherwise)
         yyyy = 2000 + yy if yy < 50 else 1900 + yy
 
         return f"{dd}.{mm}.{yyyy}"
 
-    def parse_mrz(self, line1: str, line2: str) -> Dict:
-        """Parse complete TD3 MRZ (2 lines)"""
+    @staticmethod
+    def parse_mrz(line1: str, line2: str) -> Dict:
+        """
+        Parse complete TD3 MRZ (2 lines x 44 chars)
+        Line 1: Document type, Country, Names
+        Line 2: Passport #, Nationality, DOB, Sex, Expiry, Personal #
+        """
         # Clean lines
         line1 = line1.strip().upper()
         line2 = line2.strip().upper()
 
-        # Parse both lines
-        data_line1 = self.parse_td3_line1(line1)
-        data_line2 = self.parse_td3_line2(line2)
+        if len(line1) != 44 or len(line2) != 44:
+            raise ValueError(f"Invalid MRZ format. Line1: {len(line1)}, Line2: {len(line2)}")
 
-        # Combine results
-        result = {
-            **data_line1,
-            **data_line2,
+        # Parse Line 1
+        doc_type = line1[0]
+        country_code = line1[2:5].replace('<', '').strip()
+
+        names_section = line1[5:44].replace('<', ' ').strip()
+        name_parts = [part for part in names_section.split('  ') if part]
+
+        surname = name_parts[0] if name_parts else ""
+        given_names = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ""
+
+        # Parse Line 2
+        passport_number = line2[0:9].replace('<', '').strip()
+        passport_check = line2[9]
+
+        nationality = line2[10:13].replace('<', '').strip()
+
+        dob = line2[13:19]
+        dob_check = line2[19]
+
+        sex = line2[20].replace('<', '')
+
+        expiry = line2[21:27]
+        expiry_check = line2[27]
+
+        personal_number = line2[28:42].replace('<', '').strip()
+        personal_check = line2[42]
+
+        composite_check = line2[43]
+
+        # Validate checksums
+        validations = {
+            "passport_number_valid": MRZParser.validate_checksum(line2[0:9], passport_check),
+            "dob_valid": MRZParser.validate_checksum(dob, dob_check),
+            "expiry_valid": MRZParser.validate_checksum(expiry, expiry_check),
+            "personal_number_valid": MRZParser.validate_checksum(line2[28:42], personal_check),
+        }
+
+        # Composite check
+        composite_data = line2[0:10] + line2[13:20] + line2[21:43]
+        validations["composite_valid"] = MRZParser.validate_checksum(composite_data, composite_check)
+
+        # Validate date formats
+        validations["dob_format_valid"] = len(dob) == 6 and dob.isdigit()
+        validations["expiry_format_valid"] = len(expiry) == 6 and expiry.isdigit()
+
+        # Overall validation
+        all_checks_valid = all(validations.values())
+
+        return {
+            "document_type": doc_type,
+            "country_code": country_code,
+            "surname": surname.strip(),
+            "given_names": given_names.strip(),
+            "passport_number": passport_number,
+            "nationality": nationality,
+            "date_of_birth": MRZParser.format_date(dob),
+            "date_of_birth_raw": dob,
+            "sex": sex if sex in ['M', 'F'] else 'Unknown',
+            "date_of_expiry": MRZParser.format_date(expiry),
+            "date_of_expiry_raw": expiry,
+            "personal_number": personal_number,
+            "validations": validations,
+            "validation_status": "PASS" if all_checks_valid else "FAIL",
             "raw_mrz": {
                 "line1": line1,
                 "line2": line2
             }
         }
 
-        # Overall validation status
-        all_checks_valid = all(data_line2["validations"].values())
-        result["validation_status"] = "PASS" if all_checks_valid else "FAIL"
 
-        return result
+# ============================================
+# SECURITY & RATE LIMITING
+# ============================================
+
+request_timestamps = {}
+RATE_LIMIT_WINDOW = 60
+MAX_REQUESTS_PER_WINDOW = 10
+MAX_FILE_SIZE = 10 * 1024 * 1024
+ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png']
+
+def check_rate_limit(client_id: str) -> bool:
+    """Rate limiting: Max 10 requests per 60 seconds per client"""
+    current_time = time.time()
+
+    if client_id not in request_timestamps:
+        request_timestamps[client_id] = []
+
+    # Remove old timestamps
+    request_timestamps[client_id] = [
+        ts for ts in request_timestamps[client_id]
+        if current_time - ts < RATE_LIMIT_WINDOW
+    ]
+
+    # Check limit
+    if len(request_timestamps[client_id]) >= MAX_REQUESTS_PER_WINDOW:
+        return False
+
+    request_timestamps[client_id].append(current_time)
+    return True
+
+def validate_image_file(file: UploadFile, contents: bytes) -> None:
+    """Validate uploaded file for security"""
+    # Check file size
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size: {MAX_FILE_SIZE / (1024*1024)}MB"
+        )
+
+    # Check extension
+    if file.filename:
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+
+    # Validate it's actually an image
+    try:
+        img = Image.open(io.BytesIO(contents))
+        img.verify()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or corrupted image file"
+        )
 
 
 # ============================================
 # API ENDPOINTS
 # ============================================
+
+# Initialize Gemini Scanner
+gemini_scanner = GeminiScanner()
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -497,82 +431,55 @@ async def root(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for Railway"""
-    return {"status": "healthy", "service": "bojxona-passport-scanner"}
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "passport-scanner-gemini",
+        "version": "2.0.0"
+    }
 
 
 @app.post("/scan")
 async def scan_passport(request: Request, file: UploadFile = File(...)):
     """
-    Main endpoint for passport scanning
-    Uses PassportEye with multiple enhancement strategies
+    Main endpoint for passport scanning using Google Gemini API
     """
     try:
-        # Get client identifier for rate limiting
+        # Rate limiting
         client_id = request.client.host if request.client else "unknown"
 
-        # Check rate limit
         if not check_rate_limit(client_id):
             raise HTTPException(
                 status_code=429,
-                detail="Juda ko'p so'rov. Iltimos, bir oz kuting."
+                detail="Too many requests. Please wait a moment."
             )
 
-        # Read uploaded file
+        # Read file
         contents = await file.read()
 
         if not contents:
-            raise HTTPException(status_code=400, detail="Bo'sh fayl yuklandi")
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
 
-        # Validate file (security check)
+        # Validate file
         validate_image_file(file, contents)
 
-        # Initialize parser
-        parser = MRZParser()
+        print(f"📸 Processing image: {file.filename} ({len(contents)} bytes)")
 
-        # Try multiple OCR strategies
-        print("🔍 Starting MRZ detection with multiple strategies...")
-        mrz = try_multiple_ocr_strategies(contents)
+        # Scan with Gemini API
+        print("🤖 Scanning passport with Gemini AI...")
+        mrz_result = gemini_scanner.scan_passport_mrz(contents)
 
-        if mrz is None:
-            raise HTTPException(
-                status_code=422,
-                detail="❌ Pasport MRZ topilmadi.\n\n"
-                       "📋 Iltimos, quyidagilarni ta'minlang:\n"
-                       "• Pasportni tekis joyga qo'ying\n"
-                       "• Yaxshi yoritilgan joyda suratga oling\n"
-                       "• MRZ (pastdagi 2 qator) aniq ko'rinsin\n"
-                       "• Pasportni to'g'ri yo'nalishda tuting\n"
-                       "• Kamera fokusda bo'lsin"
-            )
+        # Parse MRZ
+        print("📋 Parsing MRZ data...")
+        parsed_data = MRZParser.parse_mrz(mrz_result["line1"], mrz_result["line2"])
 
-        # Extract MRZ text from passporteye result
-        mrz_text = mrz.mrz_text if hasattr(mrz, 'mrz_text') else None
-
-        if not mrz_text or len(mrz_text) < 88:
-            raise HTTPException(
-                status_code=422,
-                detail="❌ MRZ matnini to'liq o'qib bo'lmadi.\n\n"
-                       "Iltimos, yaxshi yoritilgan va aniq rasm oling."
-            )
-
-        # Split into two lines (TD3 format: 44 chars per line)
-        line1 = mrz_text[0:44]
-        line2 = mrz_text[44:88]
-
-        print(f"✅ MRZ Lines extracted:")
-        print(f"   Line 1: {line1}")
-        print(f"   Line 2: {line2}")
-
-        # Parse with strict ICAO validation
-        parsed_data = parser.parse_mrz(line1, line2)
-
-        # Add scanning metadata
+        # Add metadata
         parsed_data["scan_metadata"] = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "file_name": file.filename,
             "file_size": len(contents),
-            "file_hash": hashlib.sha256(contents).hexdigest()[:16]
+            "file_hash": hashlib.sha256(contents).hexdigest()[:16],
+            "scanner": "Google Gemini 1.5 Flash"
         }
 
         print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
@@ -587,31 +494,27 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
     except ValueError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
-        # Log error but don't expose internal details
-        print(f"❌ Error scanning passport: {str(e)}")
+        print(f"❌ Error: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail="⚠️ Xatolik yuz berdi.\n\n"
-                   "Iltimos, rasmni qayta yuklang yoki yordam so'rang."
+            detail=f"Failed to scan passport: {str(e)}"
         )
 
 
 @app.get("/test")
 async def test_endpoint():
-    """Test endpoint to verify API is running"""
+    """Test endpoint"""
     return {
-        "message": "Bojxona Passport Scanner API",
+        "message": "Passport Scanner with Google Gemini AI",
         "version": "2.0.0",
         "status": "operational",
         "features": [
+            "Google Gemini 1.5 Flash Vision API",
+            "Round-Robin API Key Rotation",
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
-            "PassportEye OCR with Multiple Strategies",
-            "JSHSHIR/PNFL Extraction",
             "Rate Limiting",
-            "File Validation",
-            "Image Enhancement",
-            "Auto-rotation Support"
+            "File Validation"
         ]
     }
 
