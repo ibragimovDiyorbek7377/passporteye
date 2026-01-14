@@ -10,13 +10,13 @@ import io
 import os
 import hashlib
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from passporteye import read_mrz
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 import time
 
 app = FastAPI(
@@ -110,6 +110,93 @@ def validate_image_file(file: UploadFile, contents: bytes) -> None:
             status_code=400,
             detail="Invalid or corrupted image file"
         )
+
+
+# ============================================
+# IMAGE PROCESSING FOR BETTER OCR
+# ============================================
+
+def enhance_image_for_ocr(image: Image.Image) -> List[Image.Image]:
+    """
+    Create multiple enhanced versions of the image for OCR
+    Returns list of images to try
+    """
+    images = []
+
+    # Original image
+    images.append(image.copy())
+
+    # Auto-orient using EXIF data
+    try:
+        oriented = ImageOps.exif_transpose(image)
+        if oriented is not None:
+            images.append(oriented)
+    except:
+        pass
+
+    # Increase contrast
+    try:
+        enhancer = ImageEnhance.Contrast(image)
+        images.append(enhancer.enhance(1.5))
+        images.append(enhancer.enhance(2.0))
+    except:
+        pass
+
+    # Increase sharpness
+    try:
+        enhancer = ImageEnhance.Sharpness(image)
+        images.append(enhancer.enhance(2.0))
+    except:
+        pass
+
+    # Grayscale
+    try:
+        gray = ImageOps.grayscale(image)
+        images.append(gray)
+        # Grayscale with high contrast
+        enhancer = ImageEnhance.Contrast(gray)
+        images.append(enhancer.enhance(2.5))
+    except:
+        pass
+
+    return images
+
+
+def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
+    """
+    Try multiple OCR strategies to detect MRZ
+    Returns the first successful MRZ detection or None
+    """
+    # Load image
+    try:
+        image = Image.open(io.BytesIO(contents))
+    except:
+        return None
+
+    # Get multiple enhanced versions
+    enhanced_images = enhance_image_for_ocr(image)
+
+    # Try OCR on each version
+    for idx, img in enumerate(enhanced_images):
+        try:
+            # Convert back to bytes
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+
+            # Try PassportEye OCR
+            mrz = read_mrz(img_bytes)
+
+            if mrz is not None and hasattr(mrz, 'mrz_text'):
+                # Verify MRZ text is valid (should be 88+ chars for TD3)
+                if len(mrz.mrz_text) >= 88:
+                    print(f"✅ MRZ detected using strategy #{idx + 1}")
+                    return mrz
+        except Exception as e:
+            # Continue to next strategy
+            continue
+
+    return None
 
 
 # ============================================
@@ -340,7 +427,7 @@ async def health_check():
 async def scan_passport(request: Request, file: UploadFile = File(...)):
     """
     Main endpoint for passport scanning
-    Uses PassportEye library for optimal MRZ detection
+    Uses PassportEye with multiple enhancement strategies
     """
     try:
         # Get client identifier for rate limiting
@@ -350,14 +437,14 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
         if not check_rate_limit(client_id):
             raise HTTPException(
                 status_code=429,
-                detail="Rate limit exceeded. Please wait before trying again."
+                detail="Juda ko'p so'rov. Iltimos, bir oz kuting."
             )
 
         # Read uploaded file
         contents = await file.read()
 
         if not contents:
-            raise HTTPException(status_code=400, detail="Empty file uploaded")
+            raise HTTPException(status_code=400, detail="Bo'sh fayl yuklandi")
 
         # Validate file (security check)
         validate_image_file(file, contents)
@@ -365,14 +452,20 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
         # Initialize parser
         parser = MRZParser()
 
-        # Use PassportEye directly - it handles preprocessing internally
-        # PassportEye is optimized for MRZ detection without manual preprocessing
-        mrz = read_mrz(io.BytesIO(contents))
+        # Try multiple OCR strategies
+        print("🔍 Starting MRZ detection with multiple strategies...")
+        mrz = try_multiple_ocr_strategies(contents)
 
         if mrz is None:
             raise HTTPException(
                 status_code=422,
-                detail="Pasport topilmadi. Iltimos, rasmni yaxshi yoritib, aniq oling va MRZ (pastdagi 2 qator) ko'rinishini ta'minlang."
+                detail="❌ Pasport MRZ topilmadi.\n\n"
+                       "📋 Iltimos, quyidagilarni ta'minlang:\n"
+                       "• Pasportni tekis joyga qo'ying\n"
+                       "• Yaxshi yoritilgan joyda suratga oling\n"
+                       "• MRZ (pastdagi 2 qator) aniq ko'rinsin\n"
+                       "• Pasportni to'g'ri yo'nalishda tuting\n"
+                       "• Kamera fokusda bo'lsin"
             )
 
         # Extract MRZ text from passporteye result
@@ -381,12 +474,17 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
         if not mrz_text or len(mrz_text) < 88:
             raise HTTPException(
                 status_code=422,
-                detail="MRZ matnini to'liq o'qib bo'lmadi. Iltimos, pasportni to'g'ri joylashtiring."
+                detail="❌ MRZ matnini to'liq o'qib bo'lmadi.\n\n"
+                       "Iltimos, yaxshi yoritilgan va aniq rasm oling."
             )
 
         # Split into two lines (TD3 format: 44 chars per line)
         line1 = mrz_text[0:44]
         line2 = mrz_text[44:88]
+
+        print(f"✅ MRZ Lines extracted:")
+        print(f"   Line 1: {line1}")
+        print(f"   Line 2: {line2}")
 
         # Parse with strict ICAO validation
         parsed_data = parser.parse_mrz(line1, line2)
@@ -396,8 +494,10 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "file_name": file.filename,
             "file_size": len(contents),
-            "file_hash": hashlib.sha256(contents).hexdigest()[:16]  # Short hash for tracking
+            "file_hash": hashlib.sha256(contents).hexdigest()[:16]
         }
+
+        print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
 
         return JSONResponse(content={
             "success": True,
@@ -410,10 +510,11 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
         # Log error but don't expose internal details
-        print(f"Error scanning passport: {str(e)}")
+        print(f"❌ Error scanning passport: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail="Xatolik yuz berdi. Iltimos, rasmni qayta yuklang yoki yordam so'rang."
+            detail="⚠️ Xatolik yuz berdi.\n\n"
+                   "Iltimos, rasmni qayta yuklang yoki yordam so'rang."
         )
 
 
@@ -422,15 +523,17 @@ async def test_endpoint():
     """Test endpoint to verify API is running"""
     return {
         "message": "Bojxona Passport Scanner API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "operational",
         "features": [
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
-            "PassportEye OCR",
+            "PassportEye OCR with Multiple Strategies",
             "JSHSHIR/PNFL Extraction",
             "Rate Limiting",
-            "File Validation"
+            "File Validation",
+            "Image Enhancement",
+            "Auto-rotation Support"
         ]
     }
 

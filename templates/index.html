@@ -493,20 +493,22 @@
         let stream = null;
         let capturedImageBlob = null;
 
-        // Initialize camera
+        // Initialize camera with high resolution
         async function initCamera() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({
                     video: {
                         facingMode: 'environment',
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 }
+                        width: { ideal: 3840, min: 1920 },
+                        height: { ideal: 2160, min: 1080 },
+                        focusMode: 'continuous',
+                        aspectRatio: { ideal: 16/9 }
                     }
                 });
                 cameraStream.srcObject = stream;
                 hideError();
             } catch (error) {
-                showError('Kamerani ishga tushirib bo\'lmadi. Iltimos, ruxsat bering.');
+                showError('❌ Kamera xatosi.\n\nIltimos, kamera ruxsatini bering va qaytadan urinib ko\'ring.');
                 console.error('Camera error:', error);
             }
         }
@@ -532,11 +534,11 @@
             retakeBtn.style.display = 'block';
             passportGuide.classList.add('scanning');
 
-            // Convert to blob and scan
+            // Convert to blob with maximum quality and scan
             canvas.toBlob(async (blob) => {
                 capturedImageBlob = blob;
                 await scanPassport(blob);
-            }, 'image/jpeg', 0.95);
+            }, 'image/jpeg', 0.98);
         }
 
         // Scan passport via API
@@ -565,8 +567,14 @@
                 setTimeout(() => captureBtn.classList.remove('success'), 1000);
 
             } catch (error) {
-                showError(error.message);
-                retakeBtn.click(); // Auto-retake on error
+                // Show detailed error message
+                const errorMsg = error.message || 'Noma\'lum xato';
+                showError(errorMsg);
+                // Don't auto-retake, let user see the error
+                setTimeout(() => {
+                    retakeBtn.style.display = 'block';
+                    captureBtn.style.display = 'none';
+                }, 500);
             } finally {
                 loading.classList.remove('show');
                 passportGuide.classList.remove('scanning');
