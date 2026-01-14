@@ -438,6 +438,10 @@
             <button class="btn btn-primary" id="capture-btn">
                 📷 Rasmga Olish
             </button>
+            <button class="btn btn-secondary" id="upload-btn">
+                📁 Galereyadan Yuklash
+            </button>
+            <input type="file" id="file-input" accept="image/*" style="display: none;">
             <button class="btn btn-secondary" id="retake-btn" style="display: none;">
                 🔄 Qayta Olish
             </button>
@@ -483,6 +487,8 @@
         const cameraStream = document.getElementById('camera-stream');
         const canvasPreview = document.getElementById('canvas-preview');
         const captureBtn = document.getElementById('capture-btn');
+        const uploadBtn = document.getElementById('upload-btn');
+        const fileInput = document.getElementById('file-input');
         const retakeBtn = document.getElementById('retake-btn');
         const passportGuide = document.getElementById('passport-guide');
         const loading = document.getElementById('loading');
@@ -492,24 +498,41 @@
 
         let stream = null;
         let capturedImageBlob = null;
+        let cameraAvailable = false;
 
-        // Initialize camera with high resolution
+        // Initialize camera with flexible constraints for all devices
         async function initCamera() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({
+                // Try with flexible constraints (works on ALL devices)
+                const constraints = {
                     video: {
                         facingMode: 'environment',
-                        width: { ideal: 3840, min: 1920 },
-                        height: { ideal: 2160, min: 1080 },
-                        focusMode: 'continuous',
-                        aspectRatio: { ideal: 16/9 }
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
                     }
-                });
+                };
+
+                // Check if camera is available
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('Camera not supported');
+                }
+
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
                 cameraStream.srcObject = stream;
+                cameraAvailable = true;
                 hideError();
+
+                console.log('✅ Camera initialized successfully');
             } catch (error) {
-                showError('❌ Kamera xatosi.\n\nIltimos, kamera ruxsatini bering va qaytadan urinib ko\'ring.');
-                console.error('Camera error:', error);
+                console.warn('⚠️ Camera initialization failed:', error);
+                cameraAvailable = false;
+
+                // Hide camera controls, show upload only
+                cameraStream.style.display = 'none';
+                captureBtn.style.display = 'none';
+                passportGuide.style.display = 'none';
+
+                showError('📱 Kamera ishlamayapti.\n\nIltimos, "Galereyadan Yuklash" tugmasini ishlating.');
             }
         }
 
@@ -588,10 +611,13 @@
                 // Show detailed error message
                 const errorMsg = error.message || 'Noma\'lum xato';
                 showError(errorMsg);
-                // Don't auto-retake, let user see the error
+                // Show retake options
                 setTimeout(() => {
                     retakeBtn.style.display = 'block';
-                    captureBtn.style.display = 'none';
+                    uploadBtn.style.display = 'block';
+                    if (cameraAvailable) {
+                        captureBtn.style.display = 'none';
+                    }
                 }, 500);
             } finally {
                 loading.classList.remove('show');
@@ -681,11 +707,27 @@
         // Retake photo
         function retakePhoto() {
             canvasPreview.style.display = 'none';
-            cameraStream.style.display = 'block';
             retakeBtn.style.display = 'none';
-            captureBtn.style.display = 'block';
             resultsSection.classList.remove('show');
-            initCamera();
+            hideError();
+
+            // Reset file input
+            fileInput.value = '';
+
+            // If camera is available, show it
+            if (cameraAvailable) {
+                cameraStream.style.display = 'block';
+                captureBtn.style.display = 'block';
+                passportGuide.style.display = 'block';
+                initCamera();
+            } else {
+                // Camera not available, just show upload button
+                captureBtn.style.display = 'none';
+                passportGuide.style.display = 'none';
+            }
+
+            // Always show upload button
+            uploadBtn.style.display = 'block';
         }
 
         // Show/hide error
@@ -706,8 +748,77 @@
             }
         }
 
+        // Handle file upload from gallery
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+
+            if (!file) {
+                return;
+            }
+
+            // Validate file type
+            if (!file.type.startsWith('image/')) {
+                showError('❌ Iltimos, faqat rasm faylini yuklang (JPG, PNG)');
+                return;
+            }
+
+            // Validate file size (max 10MB)
+            if (file.size > 10 * 1024 * 1024) {
+                showError('❌ Rasm hajmi juda katta. Maksimal hajm: 10MB');
+                return;
+            }
+
+            console.log(`📁 File selected: ${file.name} (${(file.size/1024).toFixed(1)}KB)`);
+
+            // Read file and display preview
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    // Display preview
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+
+                    // Show preview
+                    canvasPreview.width = img.width;
+                    canvasPreview.height = img.height;
+                    canvasPreview.getContext('2d').drawImage(img, 0, 0);
+
+                    // Hide camera, show preview
+                    if (cameraAvailable) {
+                        stopCamera();
+                        cameraStream.style.display = 'none';
+                    }
+                    canvasPreview.style.display = 'block';
+                    captureBtn.style.display = 'none';
+                    uploadBtn.style.display = 'none';
+                    retakeBtn.style.display = 'block';
+                    passportGuide.classList.add('scanning');
+
+                    // Convert to blob and scan
+                    canvas.toBlob(async (blob) => {
+                        capturedImageBlob = blob;
+                        console.log(`✅ Image loaded: ${img.width}x${img.height}`);
+                        await scanPassport(blob);
+                    }, 'image/jpeg', 0.95);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Trigger file input click
+        function openFileUpload() {
+            fileInput.click();
+        }
+
         // Event listeners
         captureBtn.addEventListener('click', capturePhoto);
+        uploadBtn.addEventListener('click', openFileUpload);
+        fileInput.addEventListener('change', handleFileUpload);
         retakeBtn.addEventListener('click', retakePhoto);
         scanAnotherBtn.addEventListener('click', retakePhoto);
 
