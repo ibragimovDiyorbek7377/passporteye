@@ -25,9 +25,14 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8319403923:AAH8LkaqsickGL980lJKEOk51tVyhI6onZA"
 WEBAPP_URL = os.environ.get("RAILWAY_STATIC_URL", "http://localhost:8000")
 
-# Ensure HTTPS for production
+# Ensure HTTPS for production Railway deployments
 if "railway.app" in WEBAPP_URL:
-    WEBAPP_URL = WEBAPP_URL.replace("http://", "https://")
+    # Add https:// if no protocol is present
+    if not WEBAPP_URL.startswith(("http://", "https://")):
+        WEBAPP_URL = f"https://{WEBAPP_URL}"
+    # Replace http:// with https:// if present
+    elif WEBAPP_URL.startswith("http://"):
+        WEBAPP_URL = WEBAPP_URL.replace("http://", "https://")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
