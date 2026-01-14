@@ -118,44 +118,29 @@ def validate_image_file(file: UploadFile, contents: bytes) -> None:
 
 def enhance_image_for_ocr(image: Image.Image) -> List[Image.Image]:
     """
-    Create multiple enhanced versions of the image for OCR
-    Returns list of images to try
+    Create optimized versions for FAST MRZ OCR
+    Returns 3 best strategies only for speed
     """
     images = []
 
-    # Original image
+    # Strategy 1: Original image (already cropped from frontend)
     images.append(image.copy())
 
-    # Auto-orient using EXIF data
-    try:
-        oriented = ImageOps.exif_transpose(image)
-        if oriented is not None:
-            images.append(oriented)
-    except:
-        pass
-
-    # Increase contrast
-    try:
-        enhancer = ImageEnhance.Contrast(image)
-        images.append(enhancer.enhance(1.5))
-        images.append(enhancer.enhance(2.0))
-    except:
-        pass
-
-    # Increase sharpness
-    try:
-        enhancer = ImageEnhance.Sharpness(image)
-        images.append(enhancer.enhance(2.0))
-    except:
-        pass
-
-    # Grayscale
+    # Strategy 2: High contrast grayscale (BEST for MRZ)
     try:
         gray = ImageOps.grayscale(image)
-        images.append(gray)
-        # Grayscale with high contrast
         enhancer = ImageEnhance.Contrast(gray)
-        images.append(enhancer.enhance(2.5))
+        images.append(enhancer.enhance(2.5))  # Very high contrast for MRZ
+    except:
+        pass
+
+    # Strategy 3: Sharpened version (if contrast doesn't work)
+    try:
+        enhancer = ImageEnhance.Sharpness(image)
+        sharpened = enhancer.enhance(2.5)
+        # Apply contrast to sharpened
+        contrast_enhancer = ImageEnhance.Contrast(sharpened)
+        images.append(contrast_enhancer.enhance(1.8))
     except:
         pass
 

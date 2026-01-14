@@ -128,7 +128,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors"""
+    """Handle errors including Telegram conflicts"""
+    error_msg = str(context.error)
+
+    # Handle Telegram Conflict (multiple bot instances)
+    if "Conflict" in error_msg or "terminated by other getUpdates" in error_msg:
+        logger.warning("⚠️ Telegram Conflict detected - another bot instance is running")
+        logger.warning("This deployment will continue and override the previous instance")
+        return  # Don't send error message to user for conflicts
+
     logger.error(f"Exception while handling an update: {context.error}")
 
     if update and update.effective_message:
@@ -169,6 +177,11 @@ async def main():
     logger.info("Starting Telegram bot...")
     await application.initialize()
     await application.start()
+
+    # Delete webhook to ensure clean polling (fixes conflict with multiple instances)
+    logger.info("Clearing any existing webhooks...")
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
     await application.updater.start_polling(drop_pending_updates=True)
 
     logger.info("✅ Bojxona Passport Scanner is now running!")

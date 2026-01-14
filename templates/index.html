@@ -513,7 +513,7 @@
             }
         }
 
-        // Capture photo
+        // Capture photo with MRZ cropping and optimization
         function capturePhoto() {
             const canvas = document.createElement('canvas');
             canvas.width = cameraStream.videoWidth;
@@ -521,7 +521,7 @@
             const ctx = canvas.getContext('2d');
             ctx.drawImage(cameraStream, 0, 0);
 
-            // Show preview
+            // Show full preview
             canvasPreview.width = canvas.width;
             canvasPreview.height = canvas.height;
             canvasPreview.getContext('2d').drawImage(canvas, 0, 0);
@@ -534,11 +534,45 @@
             retakeBtn.style.display = 'block';
             passportGuide.classList.add('scanning');
 
-            // Convert to blob with maximum quality and scan
-            canvas.toBlob(async (blob) => {
+            // CROP MRZ area only (matches the green frame)
+            // Frame position: bottom: 15%, width: 90%, height: 18%
+            const cropX = canvas.width * 0.05;  // 5% from left
+            const cropY = canvas.height * 0.67; // Start at 67% from top (100% - 15% - 18% = 67%)
+            const cropWidth = canvas.width * 0.9;   // 90% width
+            const cropHeight = canvas.height * 0.18; // 18% height
+
+            // Create cropped canvas
+            const croppedCanvas = document.createElement('canvas');
+            croppedCanvas.width = cropWidth;
+            croppedCanvas.height = cropHeight;
+            const croppedCtx = croppedCanvas.getContext('2d');
+
+            // Draw only MRZ area
+            croppedCtx.drawImage(
+                canvas,
+                cropX, cropY, cropWidth, cropHeight,  // Source (from original)
+                0, 0, cropWidth, cropHeight           // Destination (to cropped)
+            );
+
+            // RESIZE for faster OCR (max width 1920px for iPhone compatibility)
+            const maxWidth = 1920;
+            let finalCanvas = croppedCanvas;
+
+            if (cropWidth > maxWidth) {
+                const scale = maxWidth / cropWidth;
+                finalCanvas = document.createElement('canvas');
+                finalCanvas.width = maxWidth;
+                finalCanvas.height = cropHeight * scale;
+                const finalCtx = finalCanvas.getContext('2d');
+                finalCtx.drawImage(croppedCanvas, 0, 0, finalCanvas.width, finalCanvas.height);
+            }
+
+            // Convert to blob and scan (JPEG 0.92 for speed vs quality balance)
+            finalCanvas.toBlob(async (blob) => {
                 capturedImageBlob = blob;
+                console.log(`📸 MRZ cropped: ${finalCanvas.width}x${finalCanvas.height}, Size: ${(blob.size/1024).toFixed(1)}KB`);
                 await scanPassport(blob);
-            }, 'image/jpeg', 0.98);
+            }, 'image/jpeg', 0.92);
         }
 
         // Scan passport via API
