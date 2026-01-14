@@ -91,14 +91,14 @@
             object-fit: contain;
         }
 
-        /* Passport Guide Frame - CRITICAL: #00F721 */
+        /* Passport Guide Frame - CRITICAL: #00F721 - MRZ ONLY */
         .passport-guide {
             position: absolute;
-            top: 50%;
+            bottom: 15%;
             left: 50%;
-            transform: translate(-50%, -50%);
-            width: 80%;
-            height: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            height: 18%;
             border: 3px solid var(--neon-green);
             border-radius: 8px;
             box-shadow:
@@ -124,11 +124,11 @@
         }
 
         .passport-guide.scanning::before {
-            content: '⚡ Skanerlash...';
+            content: '⚡ MRZ Skanerlash...';
         }
 
         .passport-guide:not(.scanning)::before {
-            content: '📄 Pasportni bu yerga joylashtiring';
+            content: '📄 MRZ (pastdagi 2 qator)ni bu yerga joylashtiring';
         }
 
         /* Corner markers for guide */
