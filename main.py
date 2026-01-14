@@ -118,27 +118,41 @@ def validate_image_file(file: UploadFile, contents: bytes) -> None:
 
 def enhance_image_for_ocr(image: Image.Image) -> List[Image.Image]:
     """
-    Create optimized versions for FAST MRZ OCR
-    Returns 3 best strategies only for speed
+    Create optimized versions for MRZ OCR
+    Returns 5 best strategies for passport scanning
     """
     images = []
 
-    # Strategy 1: Original image (already cropped from frontend)
+    # Strategy 1: Original image (PassportEye's default)
     images.append(image.copy())
 
-    # Strategy 2: High contrast grayscale (BEST for MRZ)
+    # Strategy 2: Auto-orient using EXIF (fixes rotated photos)
     try:
-        gray = ImageOps.grayscale(image)
-        enhancer = ImageEnhance.Contrast(gray)
-        images.append(enhancer.enhance(2.5))  # Very high contrast for MRZ
+        oriented = ImageOps.exif_transpose(image)
+        if oriented is not None and oriented != image:
+            images.append(oriented)
     except:
         pass
 
-    # Strategy 3: Sharpened version (if contrast doesn't work)
+    # Strategy 3: Enhanced contrast (better for faded passports)
+    try:
+        enhancer = ImageEnhance.Contrast(image)
+        images.append(enhancer.enhance(2.0))
+    except:
+        pass
+
+    # Strategy 4: High contrast grayscale (BEST for MRZ)
+    try:
+        gray = ImageOps.grayscale(image)
+        enhancer = ImageEnhance.Contrast(gray)
+        images.append(enhancer.enhance(2.5))
+    except:
+        pass
+
+    # Strategy 5: Sharpened + contrast (for blurry photos)
     try:
         enhancer = ImageEnhance.Sharpness(image)
         sharpened = enhancer.enhance(2.5)
-        # Apply contrast to sharpened
         contrast_enhancer = ImageEnhance.Contrast(sharpened)
         images.append(contrast_enhancer.enhance(1.8))
     except:
@@ -155,15 +169,20 @@ def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
     # Load image
     try:
         image = Image.open(io.BytesIO(contents))
-    except:
+        print(f"📐 Image loaded: {image.size[0]}×{image.size[1]}, Format: {image.format}, Mode: {image.mode}")
+    except Exception as e:
+        print(f"❌ Failed to load image: {e}")
         return None
 
     # Get multiple enhanced versions
     enhanced_images = enhance_image_for_ocr(image)
+    print(f"🔄 Generated {len(enhanced_images)} OCR strategies")
 
     # Try OCR on each version
     for idx, img in enumerate(enhanced_images):
         try:
+            print(f"   Strategy #{idx + 1}: {img.size[0]}×{img.size[1]}, mode={img.mode}")
+
             # Convert back to bytes
             img_bytes = io.BytesIO()
             img.save(img_bytes, format='PNG')
@@ -172,15 +191,28 @@ def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
             # Try PassportEye OCR
             mrz = read_mrz(img_bytes)
 
-            if mrz is not None and hasattr(mrz, 'mrz_text'):
-                # Verify MRZ text is valid (should be 88+ chars for TD3)
-                if len(mrz.mrz_text) >= 88:
-                    print(f"✅ MRZ detected using strategy #{idx + 1}")
-                    return mrz
+            if mrz is not None:
+                print(f"   ✓ PassportEye returned result")
+                if hasattr(mrz, 'mrz_text'):
+                    mrz_len = len(mrz.mrz_text) if mrz.mrz_text else 0
+                    print(f"   ✓ MRZ text length: {mrz_len} chars")
+                    # Verify MRZ text is valid (should be 88+ chars for TD3)
+                    if mrz_len >= 88:
+                        print(f"✅ MRZ detected using strategy #{idx + 1}")
+                        print(f"   MRZ Preview: {mrz.mrz_text[:44]}...")
+                        return mrz
+                    else:
+                        print(f"   ✗ MRZ too short (need 88+)")
+                else:
+                    print(f"   ✗ No mrz_text attribute")
+            else:
+                print(f"   ✗ PassportEye returned None")
+
         except Exception as e:
-            # Continue to next strategy
+            print(f"   ✗ Strategy #{idx + 1} failed: {type(e).__name__}: {str(e)[:100]}")
             continue
 
+    print(f"❌ All {len(enhanced_images)} strategies failed")
     return None
 
 
