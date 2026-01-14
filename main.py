@@ -8,19 +8,16 @@ Target: Customs Committee of Uzbekistan
 
 import io
 import os
-import cv2
-import numpy as np
+import hashlib
 from datetime import datetime
-from typing import Dict, Optional, Tuple
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from typing import Dict, Optional
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi import Request
 from passporteye import read_mrz
 from PIL import Image
-import re
+import time
 
 app = FastAPI(
     title="Bojxona Passport Scanner",
@@ -40,6 +37,84 @@ app.add_middleware(
 # Templates
 templates = Jinja2Templates(directory="templates")
 
+# ============================================
+# CYBERSECURITY FEATURES
+# ============================================
+
+# Rate limiting storage (in-memory for simplicity)
+request_timestamps = {}
+RATE_LIMIT_WINDOW = 60  # seconds
+MAX_REQUESTS_PER_WINDOW = 10
+
+# File size limits (10MB max)
+MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# Allowed file types
+ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png']
+ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png']
+
+
+def check_rate_limit(client_id: str) -> bool:
+    """
+    Simple rate limiting: Max 10 requests per 60 seconds per client
+    """
+    current_time = time.time()
+
+    if client_id not in request_timestamps:
+        request_timestamps[client_id] = []
+
+    # Remove old timestamps outside the window
+    request_timestamps[client_id] = [
+        ts for ts in request_timestamps[client_id]
+        if current_time - ts < RATE_LIMIT_WINDOW
+    ]
+
+    # Check if limit exceeded
+    if len(request_timestamps[client_id]) >= MAX_REQUESTS_PER_WINDOW:
+        return False
+
+    # Add current request
+    request_timestamps[client_id].append(current_time)
+    return True
+
+
+def validate_image_file(file: UploadFile, contents: bytes) -> None:
+    """
+    Validate uploaded file for security
+    - Check file size
+    - Check file extension
+    - Validate it's actually an image
+    """
+    # Check file size
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024*1024)}MB"
+        )
+
+    # Check extension
+    if file.filename:
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+
+    # Validate it's actually an image using PIL
+    try:
+        img = Image.open(io.BytesIO(contents))
+        img.verify()  # Verify it's not corrupted
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or corrupted image file"
+        )
+
+
+# ============================================
+# ICAO 9303 VALIDATOR
+# ============================================
 
 class ICAOValidator:
     """
@@ -109,6 +184,10 @@ class ICAOValidator:
             return False
 
 
+# ============================================
+# MRZ PARSER
+# ============================================
+
 class MRZParser:
     """
     ICAO 9303 TD3 Format MRZ Parser
@@ -119,46 +198,10 @@ class MRZParser:
     def __init__(self):
         self.validator = ICAOValidator()
 
-    def preprocess_image(self, image_bytes: bytes) -> np.ndarray:
-        """
-        Preprocess image for better MRZ detection
-        - Convert to grayscale
-        - Apply thresholding
-        - Enhance contrast
-        """
-        # Convert bytes to numpy array
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if img is None:
-            raise ValueError("Failed to decode image")
-
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # Apply bilateral filter to reduce noise while keeping edges sharp
-        filtered = cv2.bilateralFilter(gray, 9, 75, 75)
-
-        # Apply adaptive thresholding
-        thresh = cv2.adaptiveThreshold(
-            filtered, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 11, 2
-        )
-
-        # Encode back to bytes
-        _, buffer = cv2.imencode('.png', thresh)
-
-        return buffer.tobytes()
-
     def parse_td3_line1(self, line: str) -> Dict:
         """
         Parse TD3 Line 1 (44 characters)
         Format: P<UTONATIONS<<SURNAME<<GIVEN<NAMES<<<<<<<<<
-        Positions:
-        1: P (Passport)
-        2: < (filler)
-        3-5: Issuing country code
-        6-44: Names (surname, given names separated by <<)
         """
         if len(line) != 44:
             raise ValueError(f"Line 1 must be 44 characters, got {len(line)}")
@@ -183,20 +226,7 @@ class MRZParser:
     def parse_td3_line2(self, line: str) -> Dict:
         """
         Parse TD3 Line 2 (44 characters)
-        Format: L898902C<3UTO6908061F9406236UZB<<<<<<<<<<<6
-
-        Positions:
-        1-9: Passport number
-        10: Check digit for passport number
-        11-13: Nationality
-        14-19: Date of birth (YYMMDD)
-        20: Check digit for DOB
-        21: Sex (M/F/<)
-        22-27: Date of expiry (YYMMDD)
-        28: Check digit for expiry
-        29-42: Personal number (JSHSHIR/PNFL) - CRITICAL for Uzbekistan
-        43: Check digit for personal number
-        44: Final composite check digit
+        Extracts: Passport #, DOB, Sex, Expiry, JSHSHIR/PNFL
         """
         if len(line) != 44:
             raise ValueError(f"Line 2 must be 44 characters, got {len(line)}")
@@ -229,7 +259,7 @@ class MRZParser:
             "personal_number_valid": self.validator.validate_checksum(line[28:42], personal_check),
         }
 
-        # Composite check validates: passport + passport_check + dob + dob_check + expiry + expiry_check + personal + personal_check
+        # Composite check
         composite_data = line[0:10] + line[13:20] + line[21:43]
         validations["composite_valid"] = self.validator.validate_checksum(composite_data, composite_check)
 
@@ -290,6 +320,10 @@ class MRZParser:
         return result
 
 
+# ============================================
+# API ENDPOINTS
+# ============================================
+
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     """Serve the Telegram Mini App frontend"""
@@ -303,61 +337,66 @@ async def health_check():
 
 
 @app.post("/scan")
-async def scan_passport(file: UploadFile = File(...)):
+async def scan_passport(request: Request, file: UploadFile = File(...)):
     """
     Main endpoint for passport scanning
-    Accepts image file and returns parsed MRZ data with ICAO validation
+    Uses PassportEye library for optimal MRZ detection
     """
     try:
+        # Get client identifier for rate limiting
+        client_id = request.client.host if request.client else "unknown"
+
+        # Check rate limit
+        if not check_rate_limit(client_id):
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Please wait before trying again."
+            )
+
         # Read uploaded file
         contents = await file.read()
 
         if not contents:
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
+        # Validate file (security check)
+        validate_image_file(file, contents)
+
         # Initialize parser
         parser = MRZParser()
 
-        # Preprocess image for better OCR
-        preprocessed = parser.preprocess_image(contents)
-
-        # Use passporteye for MRZ extraction
-        mrz = read_mrz(io.BytesIO(preprocessed))
-
-        if mrz is None:
-            # Try with original image if preprocessing didn't work
-            mrz = read_mrz(io.BytesIO(contents))
+        # Use PassportEye directly - it handles preprocessing internally
+        # PassportEye is optimized for MRZ detection without manual preprocessing
+        mrz = read_mrz(io.BytesIO(contents))
 
         if mrz is None:
             raise HTTPException(
                 status_code=422,
-                detail="MRZ not detected. Please ensure the passport is clearly visible and well-lit."
+                detail="Pasport topilmadi. Iltimos, rasmni yaxshi yoritib, aniq oling va MRZ (pastdagi 2 qator) ko'rinishini ta'minlang."
             )
 
-        # Get MRZ text
-        mrz_data = mrz.to_dict()
+        # Extract MRZ text from passporteye result
+        mrz_text = mrz.mrz_text if hasattr(mrz, 'mrz_text') else None
 
-        # Extract raw MRZ lines
-        if 'raw_text' in mrz_data:
-            lines = mrz_data['raw_text']
-        else:
-            # Fallback: construct from mrz object
-            lines = [mrz.mrz_text[0:44], mrz.mrz_text[44:88]] if hasattr(mrz, 'mrz_text') else None
-
-        if not lines or len(lines) < 2:
+        if not mrz_text or len(mrz_text) < 88:
             raise HTTPException(
                 status_code=422,
-                detail="Could not extract MRZ lines. TD3 format requires 2 lines of 44 characters."
+                detail="MRZ matnini to'liq o'qib bo'lmadi. Iltimos, pasportni to'g'ri joylashtiring."
             )
+
+        # Split into two lines (TD3 format: 44 chars per line)
+        line1 = mrz_text[0:44]
+        line2 = mrz_text[44:88]
 
         # Parse with strict ICAO validation
-        parsed_data = parser.parse_mrz(lines[0], lines[1])
+        parsed_data = parser.parse_mrz(line1, line2)
 
         # Add scanning metadata
         parsed_data["scan_metadata"] = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "file_name": file.filename,
-            "file_size": len(contents)
+            "file_size": len(contents),
+            "file_hash": hashlib.sha256(contents).hexdigest()[:16]  # Short hash for tracking
         }
 
         return JSONResponse(content={
@@ -370,9 +409,11 @@ async def scan_passport(file: UploadFile = File(...)):
     except ValueError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
+        # Log error but don't expose internal details
+        print(f"Error scanning passport: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Internal server error: {str(e)}"
+            detail="Xatolik yuz berdi. Iltimos, rasmni qayta yuklang yoki yordam so'rang."
         )
 
 
@@ -386,8 +427,10 @@ async def test_endpoint():
         "features": [
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
-            "MRZ Preprocessing",
-            "JSHSHIR/PNFL Extraction"
+            "PassportEye OCR",
+            "JSHSHIR/PNFL Extraction",
+            "Rate Limiting",
+            "File Validation"
         ]
     }
 

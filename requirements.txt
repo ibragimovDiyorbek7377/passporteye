@@ -10,9 +10,7 @@ python-telegram-bot==20.7
 # OCR and Image Processing
 numpy<2.0,>=1.21.0
 passporteye==2.2.1
-opencv-python-headless==4.9.0.80
 Pillow==10.2.0
-pytesseract==0.3.10
 
 # Utilities
 python-dateutil==2.8.2
