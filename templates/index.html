@@ -551,12 +551,12 @@
             retakeBtn.style.display = 'block';
             passportGuide.classList.add('scanning');
 
-            // Convert to blob (quality 0.95 for good MRZ detection)
+            // Convert to blob (quality 0.98 for maximum MRZ clarity)
             finalCanvas.toBlob(async (blob) => {
                 capturedImageBlob = blob;
                 console.log(`📸 Full passport captured: ${finalCanvas.width}x${finalCanvas.height}, Size: ${(blob.size/1024).toFixed(1)}KB`);
                 await scanPassport(blob);
-            }, 'image/jpeg', 0.95);
+            }, 'image/jpeg', 0.98);
         }
 
         // Scan passport via API

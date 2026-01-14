@@ -9,6 +9,8 @@ Target: Customs Committee of Uzbekistan
 import io
 import os
 import hashlib
+import cv2
+import numpy as np
 from datetime import datetime
 from typing import Dict, Optional, List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
@@ -116,6 +118,44 @@ def validate_image_file(file: UploadFile, contents: bytes) -> None:
 # IMAGE PROCESSING FOR BETTER OCR
 # ============================================
 
+def opencv_preprocess_for_mrz(image_bytes: bytes) -> Optional[bytes]:
+    """
+    Use OpenCV to preprocess image specifically for MRZ OCR
+    Returns enhanced image bytes or None if preprocessing fails
+    """
+    try:
+        # Convert bytes to numpy array
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if img is None:
+            return None
+
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Apply bilateral filter (reduces noise, keeps edges sharp)
+        filtered = cv2.bilateralFilter(gray, 5, 50, 50)
+
+        # Adaptive thresholding for better MRZ contrast
+        thresh = cv2.adaptiveThreshold(
+            filtered, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            15, 10
+        )
+
+        # Encode back to bytes (PNG for lossless)
+        success, buffer = cv2.imencode('.png', thresh)
+        if success:
+            return buffer.tobytes()
+
+        return None
+    except Exception as e:
+        print(f"   ⚠️ OpenCV preprocessing failed: {e}")
+        return None
+
+
 def enhance_image_for_ocr(image: Image.Image) -> List[Image.Image]:
     """
     Create optimized versions for MRZ OCR
@@ -164,7 +204,7 @@ def enhance_image_for_ocr(image: Image.Image) -> List[Image.Image]:
 def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
     """
     Try multiple OCR strategies to detect MRZ
-    Returns the first successful MRZ detection or None
+    Uses BOTH PIL and OpenCV preprocessing for maximum success rate
     """
     # Load image
     try:
@@ -174,11 +214,33 @@ def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
         print(f"❌ Failed to load image: {e}")
         return None
 
-    # Get multiple enhanced versions
-    enhanced_images = enhance_image_for_ocr(image)
-    print(f"🔄 Generated {len(enhanced_images)} OCR strategies")
+    # Strategy 0: Try OpenCV preprocessing FIRST (best for MRZ)
+    print(f"🔧 Strategy #0: OpenCV MRZ preprocessing")
+    opencv_preprocessed = opencv_preprocess_for_mrz(contents)
+    if opencv_preprocessed:
+        try:
+            print(f"   ✓ OpenCV preprocessing successful")
+            mrz = read_mrz(io.BytesIO(opencv_preprocessed))
 
-    # Try OCR on each version
+            if mrz is not None and hasattr(mrz, 'mrz_text'):
+                mrz_len = len(mrz.mrz_text) if mrz.mrz_text else 0
+                print(f"   ✓ MRZ text length: {mrz_len} chars")
+                if mrz_len >= 88:
+                    print(f"✅ MRZ detected using OpenCV preprocessing!")
+                    print(f"   MRZ Preview: {mrz.mrz_text[:44]}...")
+                    return mrz
+                else:
+                    print(f"   ✗ MRZ too short")
+            else:
+                print(f"   ✗ No valid MRZ from OpenCV")
+        except Exception as e:
+            print(f"   ✗ OpenCV strategy failed: {e}")
+
+    # Get multiple PIL-enhanced versions
+    enhanced_images = enhance_image_for_ocr(image)
+    print(f"🔄 Generated {len(enhanced_images)} PIL strategies")
+
+    # Try OCR on each PIL version
     for idx, img in enumerate(enhanced_images):
         try:
             print(f"   Strategy #{idx + 1}: {img.size[0]}×{img.size[1]}, mode={img.mode}")
@@ -196,9 +258,8 @@ def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
                 if hasattr(mrz, 'mrz_text'):
                     mrz_len = len(mrz.mrz_text) if mrz.mrz_text else 0
                     print(f"   ✓ MRZ text length: {mrz_len} chars")
-                    # Verify MRZ text is valid (should be 88+ chars for TD3)
                     if mrz_len >= 88:
-                        print(f"✅ MRZ detected using strategy #{idx + 1}")
+                        print(f"✅ MRZ detected using PIL strategy #{idx + 1}")
                         print(f"   MRZ Preview: {mrz.mrz_text[:44]}...")
                         return mrz
                     else:
@@ -212,7 +273,7 @@ def try_multiple_ocr_strategies(contents: bytes) -> Optional[object]:
             print(f"   ✗ Strategy #{idx + 1} failed: {type(e).__name__}: {str(e)[:100]}")
             continue
 
-    print(f"❌ All {len(enhanced_images)} strategies failed")
+    print(f"❌ All strategies failed (1 OpenCV + {len(enhanced_images)} PIL)")
     return None
 
 
