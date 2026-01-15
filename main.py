@@ -46,15 +46,10 @@ class GeminiScanner:
     """
 
     KEYS = [
-        "AIzaSyCN0V0joAnErmhLMFwFMegUJ9RkWtuxCvE",
-        "AIzaSyCqDUJPZDtoG6dNryRmp4kDqY1jtx0RPJE",
-        "AIzaSyBC3dXFbl5UAzOyWOHcFrYZt6snyPreZbU",
-        "AIzaSyAoNsY7ZwOODYuMzUjIZ5McWnxRTVdvpNk",
-        "AIzaSyAOsDzsTtHd1RO29pDZcGQ2ECps6XfPrCA",
-        "AIzaSyAp4MDPxjD23Fo5bUI7SD3HhWBzy2eZLuE",
-        "AIzaSyBv8bBb3Tv6gRSWNfEu3bnxBYwR4_8DcRI",
-        "AIzaSyAyR6N_WXX6H1a67aTQlb66P8ytVRjvmTo",
-        "AIzaSyBYlJ7vzzxSoFy1sGuMgPOtSSWW5Mlmw8M"
+        "AIzaSyAbmgIshIIIHn7zEsaj0SeWIj3Y_t2JsJM",
+        "AIzaSyBogcXykEsccYDBoJUEHwiSfLVsExJTJo0",
+        "AIzaSyBNhDRPVE89TkNlcnOC9Scf4gXSaXqdqvs",
+        "AIzaSyCXbfEc_L7S9IkKWzR_OQyz9ocCbGM3nJM"
     ]
 
     def __init__(self):
@@ -91,32 +86,37 @@ class GeminiScanner:
                 # Initialize Gemini Vision model
                 model = genai.GenerativeModel('gemini-1.5-flash')
 
-                # Optimized prompt for MRZ extraction
-                prompt = """You are an expert passport MRZ (Machine Readable Zone) scanner.
+                # Optimized prompt for MRZ-only image extraction
+                prompt = """You are an expert passport MRZ (Machine Readable Zone) OCR system.
 
-Analyze this passport image and extract ONLY the MRZ data (the two lines of text at the bottom of the passport).
+This image contains ONLY the MRZ area (2 lines of machine-readable text from a passport).
 
 CRITICAL REQUIREMENTS:
-1. Extract exactly 2 lines, each line must be EXACTLY 44 characters
-2. Preserve ALL characters including "<" symbols
-3. Do NOT add spaces or modify characters
-4. The MRZ follows ICAO 9303 TD3 format
+1. Extract EXACTLY 2 lines of text
+2. Each line MUST be EXACTLY 44 characters
+3. Preserve ALL characters including "<" symbols (angle brackets)
+4. Do NOT add spaces, dashes, or modify any characters
+5. The MRZ follows ICAO 9303 TD3 standard format
 
-Format your response as JSON with this EXACT structure:
+RESPONSE FORMAT - Return ONLY this JSON structure (no markdown, no code blocks, no explanations):
 {
   "line1": "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<",
   "line2": "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
 }
 
-Rules:
-- Line 1 format: Document type (P) + Country code + Name (surname<<given<names)
-- Line 2 format: Passport number + Check digit + Nationality + DOB + Sex + Expiry + Personal number
-- Each line MUST be exactly 44 characters
-- Use "<" for filler spaces
-- Return ONLY valid JSON, no markdown, no explanations
+MRZ FORMAT SPECIFICATION:
+- Line 1 (44 chars): Document type (P) + Country code (3) + Name (39 chars with << separators)
+- Line 2 (44 chars): Passport# + Check + Nationality + DOB + Check + Sex + Expiry + Check + Personal# + Check + Composite check
 
-If you cannot detect the MRZ clearly, return:
-{"error": "MRZ_NOT_FOUND"}"""
+CRITICAL RULES:
+- Use "<" (angle bracket) for ALL filler characters
+- Do NOT use spaces, underscores, or any other character for fillers
+- Count carefully to ensure exactly 44 characters per line
+- Preserve exact character positions
+- Return ONLY the raw JSON object
+
+If MRZ is unreadable or image quality is too poor, return:
+{"error": "MRZ_NOT_READABLE"}"""
 
                 print(f"🤖 Sending request to Gemini API (key #{self.current_key_index + 1})...")
 
