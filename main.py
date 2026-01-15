@@ -43,8 +43,8 @@ templates = Jinja2Templates(directory="templates")
 
 class MistralMRZScanner:
     """
-    Mistral AI Vision API Manager for MRZ Extraction
-    Uses Pixtral-12B vision model for passport scanning
+    Mistral AI OCR API Manager for MRZ Extraction
+    Uses Mistral OCR API for passport scanning
     """
 
     def __init__(self, api_key: str):
@@ -53,18 +53,18 @@ class MistralMRZScanner:
             api_key=api_key,
             timeout_ms=60000  # 60 second timeout for API calls
         )
-        self.model = "pixtral-12b-2409"
-        print(f"🤖 Mistral MRZ Scanner initialized with model: {self.model}")
-        print(f"⏱️  Timeout configured: 60 seconds")
+        self.model = "mistral-ocr-latest"
+        print(f"🤖 Mistral MRZ Scanner initialized with model: {self.model}", flush=True)
+        print(f"⏱️  Timeout configured: 60 seconds", flush=True)
 
     def scan_passport_mrz(self, image_bytes: bytes, max_retries: int = 3) -> Dict:
         """
-        Scan passport MRZ using Mistral Vision API
+        Scan passport MRZ using Mistral OCR API
         Returns extracted MRZ data with retry logic
         """
-        print(f"🔍 Starting MRZ scan with Mistral AI...")
-        print(f"📊 Image size: {len(image_bytes)} bytes")
-        print(f"🔄 Max retries: {max_retries}")
+        print(f"🔍 Starting MRZ scan with Mistral OCR API...", flush=True)
+        print(f"📊 Image size: {len(image_bytes)} bytes", flush=True)
+        print(f"🔄 Max retries: {max_retries}", flush=True)
 
         attempts = 0
         last_error = None
@@ -74,63 +74,27 @@ class MistralMRZScanner:
                 # Convert image to base64
                 base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-                print(f"🤖 Sending request to Mistral AI (attempt {attempts + 1})...")
+                print(f"🤖 Sending request to Mistral OCR API (attempt {attempts + 1})...", flush=True)
 
-                # Mistral Vision API prompt
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": """Analyze the provided image which is a cropped Machine Readable Zone (MRZ) from a passport.
-
-CRITICAL REQUIREMENTS:
-1. Extract EXACTLY 2 lines of MRZ text
-2. Each line MUST be EXACTLY 44 characters
-3. Preserve ALL characters including "<" symbols (angle brackets)
-4. Do NOT add spaces, dashes, or modify any characters
-5. The MRZ follows ICAO 9303 TD3 standard format
-
-RESPONSE FORMAT - Return ONLY this JSON structure (no markdown, no code blocks, no explanations):
-{
-  "line1": "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<",
-  "line2": "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
-}
-
-MRZ FORMAT SPECIFICATION:
-- Line 1 (44 chars): Document type (P) + Country code (3) + Name (39 chars with << separators)
-- Line 2 (44 chars): Passport# + Check + Nationality + DOB + Check + Sex + Expiry + Check + Personal# + Check + Composite check
-
-CRITICAL RULES:
-- Use "<" (angle bracket) for ALL filler characters
-- Do NOT use spaces, underscores, or any other character for fillers
-- Count carefully to ensure exactly 44 characters per line
-- Preserve exact character positions
-- Return ONLY the raw JSON object
-
-If MRZ is unreadable or image quality is too poor, return:
-{"error": "MRZ_NOT_READABLE"}"""
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        ]
-                    }
-                ]
-
-                # Send to Mistral
-                response = self.client.chat.complete(
+                # Use Mistral OCR API as per official documentation
+                ocr_response = self.client.ocr.process(
                     model=self.model,
-                    messages=messages
+                    document={
+                        "type": "image_url",
+                        "image_url": f"data:image/jpeg;base64,{base64_image}"
+                    },
+                    include_image_base64=True
                 )
 
-                if not response or not response.choices:
-                    raise Exception("Empty response from Mistral AI")
+                if not ocr_response:
+                    raise Exception("Empty response from Mistral OCR API")
 
-                response_text = response.choices[0].message.content
-                print(f"✅ Received response from Mistral AI")
+                print(f"✅ Received response from Mistral OCR API", flush=True)
+
+                # Extract text from OCR response
+                # The OCR API returns structured data, we need to extract the MRZ text
+                response_text = self._extract_ocr_text(ocr_response)
+                print(f"📝 Extracted OCR text: {response_text[:100]}...", flush=True)
 
                 # Parse response
                 result = self._parse_mistral_response(response_text)
@@ -140,9 +104,9 @@ If MRZ is unreadable or image quality is too poor, return:
 
                 # Validate MRZ format
                 if not self._validate_mrz_format(result):
-                    raise Exception("Invalid MRZ format from Mistral AI")
+                    raise Exception("Invalid MRZ format from Mistral OCR API")
 
-                print(f"✅ MRZ extracted successfully")
+                print(f"✅ MRZ extracted successfully", flush=True)
                 return result
 
             except Exception as e:
@@ -151,35 +115,35 @@ If MRZ is unreadable or image quality is too poor, return:
                 last_error = e
                 attempts += 1
 
-                print(f"❌ Attempt {attempts} failed ({error_type}): {str(e)[:150]}")
+                print(f"❌ Attempt {attempts} failed ({error_type}): {str(e)[:150]}", flush=True)
 
                 # Check if error is timeout-related
                 if "timeout" in error_msg or "timed out" in error_msg:
-                    print(f"⏱️  Timeout error - Mistral API did not respond in time")
+                    print(f"⏱️  Timeout error - Mistral API did not respond in time", flush=True)
                     if attempts < max_retries:
-                        print(f"⚠️ Retrying with exponential backoff...")
+                        print(f"⚠️ Retrying with exponential backoff...", flush=True)
                         time.sleep(2 ** attempts)  # Exponential backoff: 2s, 4s, 8s
                     continue
                 # Check if error is related to rate limit
                 elif "429" in error_msg or "rate limit" in error_msg:
-                    print(f"⚠️ Rate limit error detected, waiting before retry...")
+                    print(f"⚠️ Rate limit error detected, waiting before retry...", flush=True)
                     time.sleep(3)
                     continue
                 # Check if error is authentication/API key issue
                 elif "401" in error_msg or "unauthorized" in error_msg or "api key" in error_msg:
-                    print(f"🔑 Authentication error - Invalid or expired Mistral API key")
+                    print(f"🔑 Authentication error - Invalid or expired Mistral API key", flush=True)
                     raise HTTPException(
                         status_code=500,
                         detail="Mistral API authentication failed. Please check API key configuration."
                     )
                 elif "503" in error_msg or "500" in error_msg:
-                    print(f"⚠️ Server error, waiting before retry...")
+                    print(f"⚠️ Server error, waiting before retry...", flush=True)
                     time.sleep(1)
                     continue
                 else:
                     # Other errors - still retry
                     if attempts < max_retries:
-                        print(f"⚠️ Unknown error, retrying...")
+                        print(f"⚠️ Unknown error, retrying...", flush=True)
                         time.sleep(0.5)
                     continue
 
@@ -187,12 +151,50 @@ If MRZ is unreadable or image quality is too poor, return:
         error_type = type(last_error).__name__
         error_detail = str(last_error)[:200]
 
-        print(f"❌ All {max_retries} attempts failed. Last error type: {error_type}")
+        print(f"❌ All {max_retries} attempts failed. Last error type: {error_type}", flush=True)
 
         raise HTTPException(
             status_code=500,
             detail=f"Failed to scan passport after {max_retries} attempts. Error: {error_type} - {error_detail}"
         )
+
+    def _extract_ocr_text(self, ocr_response) -> str:
+        """Extract text from Mistral OCR API response"""
+        try:
+            # The OCR API returns the full text content
+            # We need to extract the MRZ lines from the response
+            if hasattr(ocr_response, 'text'):
+                return ocr_response.text
+            elif hasattr(ocr_response, 'content'):
+                return ocr_response.content
+            elif isinstance(ocr_response, dict):
+                # If it's a dictionary, try common keys
+                for key in ['text', 'content', 'ocr_text', 'result']:
+                    if key in ocr_response:
+                        return ocr_response[key]
+
+            # If we can't find the text, convert to string and try to parse
+            response_str = str(ocr_response)
+            print(f"⚠️ OCR response format: {response_str[:200]}", flush=True)
+
+            # Try to find MRZ lines in the response
+            # MRZ lines typically start with 'P<' and are 44 characters long
+            lines = response_str.split('\n')
+            mrz_lines = []
+            for line in lines:
+                line = line.strip()
+                if len(line) == 44 and ('P<' in line or '<' in line):
+                    mrz_lines.append(line)
+
+            if len(mrz_lines) >= 2:
+                return json.dumps({"line1": mrz_lines[0], "line2": mrz_lines[1]})
+
+            # If still nothing found, return the full response for parsing
+            return response_str
+
+        except Exception as e:
+            print(f"❌ Error extracting OCR text: {str(e)}", flush=True)
+            return str(ocr_response)
 
     def _parse_mistral_response(self, response_text: str) -> Dict:
         """Parse Mistral response and extract JSON"""
@@ -212,25 +214,25 @@ If MRZ is unreadable or image quality is too poor, return:
             result = json.loads(cleaned)
             return result
         except json.JSONDecodeError as e:
-            print(f"❌ JSON parse error: {e}")
-            print(f"Response text: {response_text[:200]}")
-            raise Exception("Invalid JSON response from Mistral AI")
+            print(f"❌ JSON parse error: {e}", flush=True)
+            print(f"Response text: {response_text[:200]}", flush=True)
+            raise Exception("Invalid JSON response from Mistral OCR API")
 
     def _validate_mrz_format(self, result: Dict) -> bool:
         """Validate MRZ format (2 lines, 44 chars each)"""
         if "line1" not in result or "line2" not in result:
-            print(f"❌ Missing line1 or line2 in response")
+            print(f"❌ Missing line1 or line2 in response", flush=True)
             return False
 
         line1 = result["line1"]
         line2 = result["line2"]
 
         if len(line1) != 44:
-            print(f"❌ Line1 length is {len(line1)}, expected 44")
+            print(f"❌ Line1 length is {len(line1)}, expected 44", flush=True)
             return False
 
         if len(line2) != 44:
-            print(f"❌ Line2 length is {len(line2)}, expected 44")
+            print(f"❌ Line2 length is {len(line2)}, expected 44", flush=True)
             return False
 
         return True
@@ -446,9 +448,9 @@ MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "JWSVnIJhbnyhc80PY32AhKkxEbS
 
 # Log API key configuration
 if os.environ.get("MISTRAL_API_KEY"):
-    print(f"✅ Using MISTRAL_API_KEY from environment variable")
+    print(f"✅ Using MISTRAL_API_KEY from environment variable", flush=True)
 else:
-    print(f"⚠️  WARNING: Using hardcoded Mistral API key (set MISTRAL_API_KEY env var)")
+    print(f"⚠️  WARNING: Using hardcoded Mistral API key (set MISTRAL_API_KEY env var)", flush=True)
 
 mistral_scanner = MistralMRZScanner(api_key=MISTRAL_API_KEY)
 
@@ -492,14 +494,14 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
         # Validate file
         validate_image_file(file, contents)
 
-        print(f"📸 Processing image: {file.filename} ({len(contents)} bytes)")
+        print(f"📸 Processing image: {file.filename} ({len(contents)} bytes)", flush=True)
 
         # Scan with Mistral AI
-        print("🤖 Scanning passport with Mistral AI Vision...")
+        print("🤖 Scanning passport with Mistral OCR API...", flush=True)
         mrz_result = mistral_scanner.scan_passport_mrz(contents)
 
         # Parse MRZ
-        print("📋 Parsing MRZ data...")
+        print("📋 Parsing MRZ data...", flush=True)
         parsed_data = MRZParser.parse_mrz(mrz_result["line1"], mrz_result["line2"])
 
         # Add metadata
@@ -508,10 +510,10 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "file_name": file.filename,
             "file_size": len(contents),
             "file_hash": hashlib.sha256(contents).hexdigest()[:16],
-            "scanner": "Mistral AI Pixtral-12B"
+            "scanner": "Mistral AI OCR"
         }
 
-        print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
+        print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}", flush=True)
 
         return JSONResponse(content={
             "success": True,
@@ -523,7 +525,7 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
     except ValueError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        print(f"❌ Error: {str(e)}", flush=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to scan passport: {str(e)}"
@@ -534,11 +536,11 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
 async def test_endpoint():
     """Test endpoint"""
     return {
-        "message": "Passport Scanner with Mistral AI Vision",
+        "message": "Passport Scanner with Mistral AI OCR",
         "version": "3.0.0",
         "status": "operational",
         "features": [
-            "Mistral AI Pixtral-12B Vision API",
+            "Mistral AI OCR API",
             "Smart MRZ Cropping",
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
@@ -571,7 +573,7 @@ async def telegram_webhook(request: Request):
         return JSONResponse(content={"ok": True})
 
     except Exception as e:
-        print(f"❌ Error processing webhook: {str(e)}")
+        print(f"❌ Error processing webhook: {str(e)}", flush=True)
         # Return 200 anyway to avoid Telegram retrying
         return JSONResponse(content={"ok": False, "error": str(e)}, status_code=200)
 
