@@ -1,7 +1,12 @@
 # Customs-Grade Passport Scanner - Railway.app Dockerfile
-# Python 3.9 with Tesseract OCR support
+# Python 3.9 with Mistral AI Vision API
+# Last updated: 2026-01-15 - Mistral AI Migration Complete
 
 FROM python:3.9-slim
+
+# Build argument for cache busting
+ARG BUILDKIT_INLINE_CACHE=1
+ARG BUILD_DATE=2026-01-15
 
 # Set working directory
 WORKDIR /app
