@@ -8,6 +8,7 @@ import os
 import time
 import base64
 import hashlib
+import json
 from datetime import datetime
 from typing import Dict, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from mistralai import Mistral
 from PIL import Image
+from telegram import Update
 
 app = FastAPI(
     title="Passport Scanner with Mistral AI",
@@ -508,6 +510,34 @@ async def test_endpoint():
             "File Validation"
         ]
     }
+
+
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request):
+    """
+    Webhook endpoint for Telegram bot updates
+    This endpoint receives updates from Telegram when running on Railway
+    """
+    try:
+        # Get the update data from Telegram
+        update_data = await request.json()
+
+        # Import bot application (lazy import to avoid circular dependency)
+        from bot import get_application
+
+        # Get the Telegram application instance
+        application = get_application()
+
+        # Process the update
+        update = Update.de_json(update_data, application.bot)
+        await application.process_update(update)
+
+        return JSONResponse(content={"ok": True})
+
+    except Exception as e:
+        print(f"❌ Error processing webhook: {str(e)}")
+        # Return 200 anyway to avoid Telegram retrying
+        return JSONResponse(content={"ok": False, "error": str(e)}, status_code=200)
 
 
 if __name__ == "__main__":

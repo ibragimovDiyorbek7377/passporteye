@@ -12,7 +12,6 @@ from telegram import Update, WebAppInfo, InlineKeyboardButton, InlineKeyboardMar
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 import uvicorn
 from threading import Thread
-from main import app as fastapi_app
 
 # Configure logging
 logging.basicConfig(
@@ -145,8 +144,28 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# Global application instance (shared with main.py for webhooks)
+telegram_application = None
+
+def get_application():
+    """Get or create the Telegram application instance"""
+    global telegram_application
+    if telegram_application is None:
+        telegram_application = Application.builder().token(BOT_TOKEN).build()
+
+        # Register handlers
+        telegram_application.add_handler(CommandHandler("start", start_command))
+        telegram_application.add_handler(CommandHandler("help", help_command))
+        telegram_application.add_handler(CommandHandler("info", info_command))
+        telegram_application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        telegram_application.add_error_handler(error_handler)
+
+    return telegram_application
+
+
 def run_fastapi():
     """Run FastAPI server in a separate thread"""
+    from main import app as fastapi_app
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
         fastapi_app,
@@ -163,30 +182,47 @@ async def main():
     fastapi_thread.start()
     logger.info("FastAPI server started in background thread")
 
-    # Build Telegram bot application
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Small delay to let FastAPI start
+    await asyncio.sleep(2)
 
-    # Register handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("info", info_command))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_error_handler(error_handler)
+    # Build Telegram bot application
+    application = get_application()
 
     # Start bot
     logger.info("Starting Telegram bot...")
     await application.initialize()
     await application.start()
 
-    # Delete webhook to ensure clean polling (fixes conflict with multiple instances)
-    logger.info("Clearing any existing webhooks...")
-    await application.bot.delete_webhook(drop_pending_updates=True)
+    # Check if we're running on Railway (use webhooks) or locally (use polling)
+    is_railway = "railway.app" in WEBAPP_URL or os.environ.get("RAILWAY_ENVIRONMENT")
 
-    await application.updater.start_polling(drop_pending_updates=True)
+    if is_railway:
+        # Use webhooks for Railway deployment (prevents conflicts)
+        webhook_url = f"{WEBAPP_URL}/telegram-webhook"
+        logger.info(f"🌐 Setting up webhook at: {webhook_url}")
 
-    logger.info("✅ Bojxona Passport Scanner is now running!")
-    logger.info(f"📱 Mini App URL: {WEBAPP_URL}")
-    logger.info(f"🤖 Bot: @YourBotUsername")
+        # Set webhook
+        await application.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True
+        )
+
+        logger.info("✅ Bojxona Passport Scanner is now running in WEBHOOK mode!")
+        logger.info(f"📱 Mini App URL: {WEBAPP_URL}")
+        logger.info(f"🔗 Webhook: {webhook_url}")
+
+    else:
+        # Use polling for local development
+        logger.info("🔄 Running in POLLING mode (local development)")
+
+        # Delete webhook to ensure clean polling
+        logger.info("Clearing any existing webhooks...")
+        await application.bot.delete_webhook(drop_pending_updates=True)
+
+        await application.updater.start_polling(drop_pending_updates=True)
+
+        logger.info("✅ Bojxona Passport Scanner is now running in POLLING mode!")
+        logger.info(f"📱 Mini App URL: {WEBAPP_URL}")
 
     # Keep running
     try:
@@ -194,7 +230,8 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
-        await application.updater.stop()
+        if not is_railway and application.updater.running:
+            await application.updater.stop()
         await application.stop()
         await application.shutdown()
 
