@@ -536,32 +536,89 @@
             }
         }
 
-        // Capture photo with optimization (NO CROPPING - PassportEye needs full passport!)
+        // Capture photo with MRZ-only cropping for speed optimization
         function capturePhoto() {
-            const canvas = document.createElement('canvas');
-            canvas.width = cameraStream.videoWidth;
-            canvas.height = cameraStream.videoHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(cameraStream, 0, 0);
+            // Create full-size canvas from video
+            const fullCanvas = document.createElement('canvas');
+            fullCanvas.width = cameraStream.videoWidth;
+            fullCanvas.height = cameraStream.videoHeight;
+            const fullCtx = fullCanvas.getContext('2d');
+            fullCtx.drawImage(cameraStream, 0, 0);
 
-            // RESIZE for faster processing (max 2560px for good quality)
-            const maxWidth = 2560;
-            let finalCanvas = canvas;
+            // Calculate MRZ crop area based on overlay position
+            // The overlay is positioned at bottom 15%, width 90%, height 18%
+            const cameraContainer = document.querySelector('.camera-container');
+            const containerWidth = cameraContainer.clientWidth;
+            const containerHeight = cameraContainer.clientHeight;
 
-            if (canvas.width > maxWidth) {
-                const scale = maxWidth / canvas.width;
+            // Video aspect ratio might differ from container
+            const videoAspect = fullCanvas.width / fullCanvas.height;
+            const containerAspect = containerWidth / containerHeight;
+
+            let renderWidth, renderHeight, offsetX, offsetY;
+
+            if (videoAspect > containerAspect) {
+                // Video is wider - height matches, width is cropped
+                renderHeight = containerHeight;
+                renderWidth = containerHeight * videoAspect;
+                offsetX = (renderWidth - containerWidth) / 2;
+                offsetY = 0;
+            } else {
+                // Video is taller - width matches, height is cropped
+                renderWidth = containerWidth;
+                renderHeight = containerWidth / videoAspect;
+                offsetX = 0;
+                offsetY = (renderHeight - containerHeight) / 2;
+            }
+
+            // Calculate MRZ box position in video coordinates
+            const overlayWidthPercent = 0.90;
+            const overlayHeightPercent = 0.18;
+            const overlayBottomPercent = 0.15;
+
+            const overlayWidth = containerWidth * overlayWidthPercent;
+            const overlayHeight = containerHeight * overlayHeightPercent;
+            const overlayX = (containerWidth - overlayWidth) / 2;
+            const overlayY = containerHeight * (1 - overlayBottomPercent - overlayHeightPercent);
+
+            // Convert to video coordinates
+            const scaleX = fullCanvas.width / renderWidth;
+            const scaleY = fullCanvas.height / renderHeight;
+
+            const cropX = (overlayX + offsetX) * scaleX;
+            const cropY = (overlayY + offsetY) * scaleY;
+            const cropWidth = overlayWidth * scaleX;
+            const cropHeight = overlayHeight * scaleY;
+
+            // Create cropped canvas (MRZ only)
+            const croppedCanvas = document.createElement('canvas');
+            croppedCanvas.width = cropWidth;
+            croppedCanvas.height = cropHeight;
+            const croppedCtx = croppedCanvas.getContext('2d');
+            croppedCtx.drawImage(
+                fullCanvas,
+                cropX, cropY, cropWidth, cropHeight,
+                0, 0, cropWidth, cropHeight
+            );
+
+            // Resize to width ~1000px for speed optimization
+            const maxWidth = 1000;
+            let finalCanvas = croppedCanvas;
+
+            if (croppedCanvas.width > maxWidth) {
+                const scale = maxWidth / croppedCanvas.width;
                 finalCanvas = document.createElement('canvas');
                 finalCanvas.width = maxWidth;
-                finalCanvas.height = canvas.height * scale;
+                finalCanvas.height = croppedCanvas.height * scale;
                 const finalCtx = finalCanvas.getContext('2d');
 
                 // High quality resize
                 finalCtx.imageSmoothingEnabled = true;
                 finalCtx.imageSmoothingQuality = 'high';
-                finalCtx.drawImage(canvas, 0, 0, finalCanvas.width, finalCanvas.height);
+                finalCtx.drawImage(croppedCanvas, 0, 0, finalCanvas.width, finalCanvas.height);
             }
 
-            // Show preview
+            // Show preview (cropped MRZ area)
             canvasPreview.width = finalCanvas.width;
             canvasPreview.height = finalCanvas.height;
             canvasPreview.getContext('2d').drawImage(finalCanvas, 0, 0);
@@ -574,12 +631,12 @@
             retakeBtn.style.display = 'block';
             passportGuide.classList.add('scanning');
 
-            // Convert to blob (quality 0.98 for maximum MRZ clarity)
+            // Convert to blob (quality 0.95 for MRZ clarity)
             finalCanvas.toBlob(async (blob) => {
                 capturedImageBlob = blob;
-                console.log(`📸 Full passport captured: ${finalCanvas.width}x${finalCanvas.height}, Size: ${(blob.size/1024).toFixed(1)}KB`);
+                console.log(`📸 MRZ area captured: ${finalCanvas.width}x${finalCanvas.height}, Size: ${(blob.size/1024).toFixed(1)}KB`);
                 await scanPassport(blob);
-            }, 'image/jpeg', 0.98);
+            }, 'image/jpeg', 0.95);
         }
 
         // Scan passport via API
@@ -748,7 +805,7 @@
             }
         }
 
-        // Handle file upload from gallery
+        // Handle file upload from gallery (with MRZ cropping)
         function handleFileUpload(event) {
             const file = event.target.files[0];
 
@@ -775,17 +832,49 @@
             reader.onload = function(e) {
                 const img = new Image();
                 img.onload = function() {
-                    // Display preview
-                    const canvas = document.createElement('canvas');
-                    canvas.width = img.width;
-                    canvas.height = img.height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0);
+                    // Create full canvas
+                    const fullCanvas = document.createElement('canvas');
+                    fullCanvas.width = img.width;
+                    fullCanvas.height = img.height;
+                    const fullCtx = fullCanvas.getContext('2d');
+                    fullCtx.drawImage(img, 0, 0);
 
-                    // Show preview
-                    canvasPreview.width = img.width;
-                    canvasPreview.height = img.height;
-                    canvasPreview.getContext('2d').drawImage(img, 0, 0);
+                    // Crop MRZ area (bottom 18% of image, centered 90% width)
+                    const cropHeight = fullCanvas.height * 0.18;
+                    const cropWidth = fullCanvas.width * 0.90;
+                    const cropX = (fullCanvas.width - cropWidth) / 2;
+                    const cropY = fullCanvas.height * (1 - 0.15 - 0.18);
+
+                    const croppedCanvas = document.createElement('canvas');
+                    croppedCanvas.width = cropWidth;
+                    croppedCanvas.height = cropHeight;
+                    const croppedCtx = croppedCanvas.getContext('2d');
+                    croppedCtx.drawImage(
+                        fullCanvas,
+                        cropX, cropY, cropWidth, cropHeight,
+                        0, 0, cropWidth, cropHeight
+                    );
+
+                    // Resize to width ~1000px for speed
+                    const maxWidth = 1000;
+                    let finalCanvas = croppedCanvas;
+
+                    if (croppedCanvas.width > maxWidth) {
+                        const scale = maxWidth / croppedCanvas.width;
+                        finalCanvas = document.createElement('canvas');
+                        finalCanvas.width = maxWidth;
+                        finalCanvas.height = croppedCanvas.height * scale;
+                        const finalCtx = finalCanvas.getContext('2d');
+
+                        finalCtx.imageSmoothingEnabled = true;
+                        finalCtx.imageSmoothingQuality = 'high';
+                        finalCtx.drawImage(croppedCanvas, 0, 0, finalCanvas.width, finalCanvas.height);
+                    }
+
+                    // Show preview (cropped MRZ)
+                    canvasPreview.width = finalCanvas.width;
+                    canvasPreview.height = finalCanvas.height;
+                    canvasPreview.getContext('2d').drawImage(finalCanvas, 0, 0);
 
                     // Hide camera, show preview
                     if (cameraAvailable) {
@@ -799,9 +888,9 @@
                     passportGuide.classList.add('scanning');
 
                     // Convert to blob and scan
-                    canvas.toBlob(async (blob) => {
+                    finalCanvas.toBlob(async (blob) => {
                         capturedImageBlob = blob;
-                        console.log(`✅ Image loaded: ${img.width}x${img.height}`);
+                        console.log(`✅ MRZ cropped from gallery: ${finalCanvas.width}x${finalCanvas.height}, Size: ${(blob.size/1024).toFixed(1)}KB`);
                         await scanPassport(blob);
                     }, 'image/jpeg', 0.95);
                 };
