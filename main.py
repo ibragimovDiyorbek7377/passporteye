@@ -161,9 +161,28 @@ class MistralMRZScanner:
     def _extract_ocr_text(self, ocr_response) -> str:
         """Extract text from Mistral OCR API response"""
         try:
-            # The OCR API returns the full text content
-            # We need to extract the MRZ lines from the response
-            if hasattr(ocr_response, 'text'):
+            # Mistral OCR API returns a response with .pages attribute
+            # Each page has a .markdown attribute with the extracted text
+            if hasattr(ocr_response, 'pages'):
+                # Extract markdown from all pages
+                all_text = []
+                for page in ocr_response.pages:
+                    if hasattr(page, 'markdown'):
+                        all_text.append(page.markdown)
+
+                # Join all text
+                full_text = '\n'.join(all_text)
+                print(f"📝 Extracted markdown text: {full_text[:200]}", flush=True)
+
+                # Find MRZ lines in the text
+                mrz_lines = self._extract_mrz_lines(full_text)
+                if len(mrz_lines) >= 2:
+                    return json.dumps({"line1": mrz_lines[0], "line2": mrz_lines[1]})
+
+                return full_text
+
+            # Fallback: try other common attributes
+            elif hasattr(ocr_response, 'text'):
                 return ocr_response.text
             elif hasattr(ocr_response, 'content'):
                 return ocr_response.content
@@ -177,15 +196,8 @@ class MistralMRZScanner:
             response_str = str(ocr_response)
             print(f"⚠️ OCR response format: {response_str[:200]}", flush=True)
 
-            # Try to find MRZ lines in the response
-            # MRZ lines typically start with 'P<' and are 44 characters long
-            lines = response_str.split('\n')
-            mrz_lines = []
-            for line in lines:
-                line = line.strip()
-                if len(line) == 44 and ('P<' in line or '<' in line):
-                    mrz_lines.append(line)
-
+            # Try to find MRZ lines
+            mrz_lines = self._extract_mrz_lines(response_str)
             if len(mrz_lines) >= 2:
                 return json.dumps({"line1": mrz_lines[0], "line2": mrz_lines[1]})
 
@@ -195,6 +207,40 @@ class MistralMRZScanner:
         except Exception as e:
             print(f"❌ Error extracting OCR text: {str(e)}", flush=True)
             return str(ocr_response)
+
+    def _extract_mrz_lines(self, text: str) -> list:
+        """Extract MRZ lines from text"""
+        # MRZ lines for TD3 (passport) format:
+        # - Line 1: 44 characters, starts with 'P<'
+        # - Line 2: 44 characters, contains passport number, dates, etc.
+        # Both lines use '<' as filler character
+
+        lines = text.split('\n')
+        mrz_lines = []
+
+        for line in lines:
+            # Clean the line
+            line = line.strip()
+
+            # MRZ lines are exactly 44 characters and contain multiple '<' characters
+            if len(line) == 44:
+                # Check if line contains typical MRZ patterns
+                if line.count('<') >= 3:  # MRZ lines have many '<' characters
+                    mrz_lines.append(line)
+            # Also check for lines that start with P< (first MRZ line)
+            elif line.startswith('P<') and len(line) >= 40:
+                # Pad or trim to exactly 44 characters
+                if len(line) < 44:
+                    line = line.ljust(44, '<')
+                elif len(line) > 44:
+                    line = line[:44]
+                mrz_lines.append(line)
+
+        print(f"🔍 Found {len(mrz_lines)} potential MRZ lines", flush=True)
+        for i, line in enumerate(mrz_lines):
+            print(f"   Line {i+1}: {line} (length: {len(line)})", flush=True)
+
+        return mrz_lines
 
     def _parse_mistral_response(self, response_text: str) -> Dict:
         """Parse Mistral response and extract JSON"""
