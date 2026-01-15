@@ -48,15 +48,24 @@ class MistralMRZScanner:
     """
 
     def __init__(self, api_key: str):
-        self.client = Mistral(api_key=api_key)
+        # Initialize with 60-second timeout to prevent hanging
+        self.client = Mistral(
+            api_key=api_key,
+            timeout_ms=60000  # 60 second timeout for API calls
+        )
         self.model = "pixtral-12b-2409"
         print(f"🤖 Mistral MRZ Scanner initialized with model: {self.model}")
+        print(f"⏱️  Timeout configured: 60 seconds")
 
     def scan_passport_mrz(self, image_bytes: bytes, max_retries: int = 3) -> Dict:
         """
         Scan passport MRZ using Mistral Vision API
         Returns extracted MRZ data with retry logic
         """
+        print(f"🔍 Starting MRZ scan with Mistral AI...")
+        print(f"📊 Image size: {len(image_bytes)} bytes")
+        print(f"🔄 Max retries: {max_retries}")
+
         attempts = 0
         last_error = None
 
@@ -138,16 +147,31 @@ If MRZ is unreadable or image quality is too poor, return:
 
             except Exception as e:
                 error_msg = str(e).lower()
+                error_type = type(e).__name__
                 last_error = e
                 attempts += 1
 
-                print(f"❌ Attempt {attempts} failed: {str(e)[:100]}")
+                print(f"❌ Attempt {attempts} failed ({error_type}): {str(e)[:150]}")
 
-                # Check if error is related to rate limit
-                if "429" in error_msg or "rate limit" in error_msg:
-                    print(f"⚠️ Rate limit error detected, waiting before retry...")
-                    time.sleep(2)
+                # Check if error is timeout-related
+                if "timeout" in error_msg or "timed out" in error_msg:
+                    print(f"⏱️  Timeout error - Mistral API did not respond in time")
+                    if attempts < max_retries:
+                        print(f"⚠️ Retrying with exponential backoff...")
+                        time.sleep(2 ** attempts)  # Exponential backoff: 2s, 4s, 8s
                     continue
+                # Check if error is related to rate limit
+                elif "429" in error_msg or "rate limit" in error_msg:
+                    print(f"⚠️ Rate limit error detected, waiting before retry...")
+                    time.sleep(3)
+                    continue
+                # Check if error is authentication/API key issue
+                elif "401" in error_msg or "unauthorized" in error_msg or "api key" in error_msg:
+                    print(f"🔑 Authentication error - Invalid or expired Mistral API key")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Mistral API authentication failed. Please check API key configuration."
+                    )
                 elif "503" in error_msg or "500" in error_msg:
                     print(f"⚠️ Server error, waiting before retry...")
                     time.sleep(1)
@@ -160,9 +184,14 @@ If MRZ is unreadable or image quality is too poor, return:
                     continue
 
         # All retries failed
+        error_type = type(last_error).__name__
+        error_detail = str(last_error)[:200]
+
+        print(f"❌ All {max_retries} attempts failed. Last error type: {error_type}")
+
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to scan passport after {max_retries} attempts. Last error: {str(last_error)}"
+            detail=f"Failed to scan passport after {max_retries} attempts. Error: {error_type} - {error_detail}"
         )
 
     def _parse_mistral_response(self, response_text: str) -> Dict:
@@ -414,6 +443,13 @@ def validate_image_file(file: UploadFile, contents: bytes) -> None:
 
 # Initialize Mistral Scanner
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "JWSVnIJhbnyhc80PY32AhKkxEbS4SFFi")
+
+# Log API key configuration
+if os.environ.get("MISTRAL_API_KEY"):
+    print(f"✅ Using MISTRAL_API_KEY from environment variable")
+else:
+    print(f"⚠️  WARNING: Using hardcoded Mistral API key (set MISTRAL_API_KEY env var)")
+
 mistral_scanner = MistralMRZScanner(api_key=MISTRAL_API_KEY)
 
 @app.get("/", response_class=HTMLResponse)
