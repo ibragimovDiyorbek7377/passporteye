@@ -44,7 +44,7 @@ templates = Jinja2Templates(directory="templates")
 class MistralMRZScanner:
     """
     Mistral AI Vision API Manager for MRZ Extraction
-    Uses Pixtral-12B model for passport scanning
+    Uses Mistral OCR-2512 model for passport scanning
     """
 
     def __init__(self, api_key: str):
@@ -53,7 +53,7 @@ class MistralMRZScanner:
             api_key=api_key,
             timeout_ms=60000  # 60 second timeout for API calls
         )
-        self.model = "pixtral-12b-2409"
+        self.model = "mistral-ocr-2512"
         print(f"🤖 Mistral MRZ Scanner initialized with model: {self.model}")
         print(f"⏱️  Timeout configured: 60 seconds")
 
@@ -508,7 +508,7 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "file_name": file.filename,
             "file_size": len(contents),
             "file_hash": hashlib.sha256(contents).hexdigest()[:16],
-            "scanner": "Mistral AI Pixtral-12B"
+            "scanner": "Mistral AI OCR-2512"
         }
 
         print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
@@ -538,7 +538,7 @@ async def test_endpoint():
         "version": "3.0.0",
         "status": "operational",
         "features": [
-            "Mistral AI Pixtral-12B Vision API",
+            "Mistral AI OCR-2512 Vision API",
             "Smart MRZ Cropping",
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
