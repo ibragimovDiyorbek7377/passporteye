@@ -57,11 +57,20 @@ class GeminiScanner:
         "AIzaSyBYlJ7vzzxSoFy1sGuMgPOtSSWW5Mlmw8M"
     ]
 
+    # Model names in priority order (try newest first, fallback to older)
+    MODELS = [
+        'gemini-1.5-flash-latest',  # Fastest, newest
+        'gemini-1.5-pro-latest',    # More capable
+        'gemini-pro-vision'          # Older but stable
+    ]
+
     def __init__(self):
         self.current_key_index = 0
         self.total_keys = len(self.KEYS)
+        self.current_model = self.MODELS[0]  # Start with fastest model
         self.configure_current_key()
         print(f"🔑 Gemini Scanner initialized with {self.total_keys} API keys")
+        print(f"🤖 Using model: {self.current_model}")
 
     def configure_current_key(self):
         """Configure Gemini with current API key"""
@@ -82,14 +91,28 @@ class GeminiScanner:
         """
         attempts = 0
         last_error = None
+        model_index = 0  # Track which model we're trying
 
         while attempts < max_retries:
             try:
                 # Load image
                 image = Image.open(io.BytesIO(image_bytes))
 
-                # Initialize Gemini Vision model
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                # Try current model
+                try:
+                    model = genai.GenerativeModel(self.current_model)
+                except Exception as model_error:
+                    # If model not found, try next model
+                    if '404' in str(model_error) or 'not found' in str(model_error).lower():
+                        if model_index < len(self.MODELS) - 1:
+                            model_index += 1
+                            self.current_model = self.MODELS[model_index]
+                            print(f"⚠️ Model not found, switching to: {self.current_model}")
+                            model = genai.GenerativeModel(self.current_model)
+                        else:
+                            raise Exception("All models failed - API might be unavailable")
+                    else:
+                        raise
 
                 # Optimized prompt for MRZ extraction
                 prompt = """You are an expert passport MRZ (Machine Readable Zone) scanner.
@@ -148,8 +171,24 @@ If you cannot detect the MRZ clearly, return:
 
                 print(f"❌ Attempt {attempts} failed: {str(e)[:100]}")
 
+                # Check if model is not found (404)
+                if "404" in error_msg or "not found" in error_msg:
+                    if model_index < len(self.MODELS) - 1:
+                        model_index += 1
+                        self.current_model = self.MODELS[model_index]
+                        print(f"⚠️ Model not available, switching to: {self.current_model}")
+                        attempts -= 1  # Don't count this as a failed attempt
+                        time.sleep(0.3)
+                        continue
+                    else:
+                        print(f"❌ All models exhausted")
+                        # Try rotating key as last resort
+                        self.rotate_key()
+                        model_index = 0  # Reset to first model with new key
+                        self.current_model = self.MODELS[0]
+                        continue
                 # Check if error is related to quota/rate limit
-                if "429" in error_msg or "quota" in error_msg or "rate limit" in error_msg:
+                elif "429" in error_msg or "quota" in error_msg or "rate limit" in error_msg:
                     print(f"⚠️ Quota/Rate limit error detected, rotating key...")
                     self.rotate_key()
                     time.sleep(0.5)  # Brief delay before retry
@@ -479,7 +518,7 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "file_name": file.filename,
             "file_size": len(contents),
             "file_hash": hashlib.sha256(contents).hexdigest()[:16],
-            "scanner": "Google Gemini 1.5 Flash"
+            "scanner": f"Google Gemini AI ({gemini_scanner.current_model})"
         }
 
         print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
@@ -508,9 +547,12 @@ async def test_endpoint():
         "message": "Passport Scanner with Google Gemini AI",
         "version": "2.0.0",
         "status": "operational",
+        "current_model": gemini_scanner.current_model,
+        "available_models": gemini_scanner.MODELS,
         "features": [
-            "Google Gemini 1.5 Flash Vision API",
-            "Round-Robin API Key Rotation",
+            "Google Gemini Vision API with Auto-Fallback",
+            "Round-Robin API Key Rotation (9 keys)",
+            "Multi-Model Support (Flash/Pro/Vision)",
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
             "Rate Limiting",
