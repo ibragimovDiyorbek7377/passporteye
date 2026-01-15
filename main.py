@@ -1,6 +1,6 @@
 """
-Telegram Mini App Backend - Passport MRZ Scanner using Google Gemini API
-Production-ready FastAPI application with round-robin key rotation
+Telegram Mini App Backend - Passport MRZ Scanner using Mistral AI Vision API
+Production-ready FastAPI application with intelligent MRZ extraction
 """
 
 import io
@@ -9,18 +9,18 @@ import time
 import base64
 import hashlib
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-import google.generativeai as genai
+from mistralai import Mistral
 from PIL import Image
 
 app = FastAPI(
-    title="Passport Scanner with Gemini AI",
+    title="Passport Scanner with Mistral AI",
     description="Telegram Mini App for Passport MRZ Scanning",
-    version="2.0.0"
+    version="3.0.0"
 )
 
 # CORS middleware for Telegram Mini App
@@ -36,63 +36,46 @@ app.add_middleware(
 templates = Jinja2Templates(directory="templates")
 
 # ============================================
-# GEMINI API MANAGER WITH KEY ROTATION
+# MISTRAL AI VISION SCANNER
 # ============================================
 
-class GeminiScanner:
+class MistralMRZScanner:
     """
-    Google Gemini API Manager with Round-Robin Key Rotation
-    Automatically switches to next key on quota/rate limit errors
+    Mistral AI Vision API Manager for MRZ Extraction
+    Uses Pixtral-12B model for passport scanning
     """
 
-    KEYS = [
-        "AIzaSyAbmgIshIIIHn7zEsaj0SeWIj3Y_t2JsJM",
-        "AIzaSyBogcXykEsccYDBoJUEHwiSfLVsExJTJo0",
-        "AIzaSyBNhDRPVE89TkNlcnOC9Scf4gXSaXqdqvs",
-        "AIzaSyCXbfEc_L7S9IkKWzR_OQyz9ocCbGM3nJM"
-    ]
-
-    def __init__(self):
-        self.current_key_index = 0
-        self.total_keys = len(self.KEYS)
-        self.configure_current_key()
-        print(f"🔑 Gemini Scanner initialized with {self.total_keys} API keys")
-
-    def configure_current_key(self):
-        """Configure Gemini with current API key"""
-        api_key = self.KEYS[self.current_key_index]
-        genai.configure(api_key=api_key)
-        print(f"🔧 Using API key #{self.current_key_index + 1}")
-
-    def rotate_key(self):
-        """Rotate to next API key (Round-Robin)"""
-        self.current_key_index = (self.current_key_index + 1) % self.total_keys
-        self.configure_current_key()
-        print(f"🔄 Rotated to API key #{self.current_key_index + 1}")
+    def __init__(self, api_key: str):
+        self.client = Mistral(api_key=api_key)
+        self.model = "pixtral-12b-2409"
+        print(f"🤖 Mistral MRZ Scanner initialized with model: {self.model}")
 
     def scan_passport_mrz(self, image_bytes: bytes, max_retries: int = 3) -> Dict:
         """
-        Scan passport MRZ using Gemini Vision API
-        Automatically retries with different API keys on quota errors
+        Scan passport MRZ using Mistral Vision API
+        Returns extracted MRZ data with retry logic
         """
         attempts = 0
         last_error = None
 
         while attempts < max_retries:
             try:
-                # Load image
-                image = Image.open(io.BytesIO(image_bytes))
+                # Convert image to base64
+                base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-                # Initialize Gemini Vision model
-                model = genai.GenerativeModel('gemini-2.5-flash')
+                print(f"🤖 Sending request to Mistral AI (attempt {attempts + 1})...")
 
-                # Optimized prompt for MRZ-only image extraction
-                prompt = """You are an expert passport MRZ (Machine Readable Zone) OCR system.
-
-This image contains ONLY the MRZ area (2 lines of machine-readable text from a passport).
+                # Mistral Vision API prompt
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": """Analyze the provided image which is a cropped Machine Readable Zone (MRZ) from a passport.
 
 CRITICAL REQUIREMENTS:
-1. Extract EXACTLY 2 lines of text
+1. Extract EXACTLY 2 lines of MRZ text
 2. Each line MUST be EXACTLY 44 characters
 3. Preserve ALL characters including "<" symbols (angle brackets)
 4. Do NOT add spaces, dashes, or modify any characters
@@ -117,26 +100,36 @@ CRITICAL RULES:
 
 If MRZ is unreadable or image quality is too poor, return:
 {"error": "MRZ_NOT_READABLE"}"""
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        ]
+                    }
+                ]
 
-                print(f"🤖 Sending request to Gemini API (key #{self.current_key_index + 1})...")
+                # Send to Mistral
+                response = self.client.chat.complete(
+                    model=self.model,
+                    messages=messages
+                )
 
-                # Send to Gemini
-                response = model.generate_content([prompt, image])
+                if not response or not response.choices:
+                    raise Exception("Empty response from Mistral AI")
 
-                if not response or not response.text:
-                    raise Exception("Empty response from Gemini API")
-
-                print(f"✅ Received response from Gemini")
+                response_text = response.choices[0].message.content
+                print(f"✅ Received response from Mistral AI")
 
                 # Parse response
-                result = self._parse_gemini_response(response.text)
+                result = self._parse_mistral_response(response_text)
 
                 if "error" in result:
                     raise Exception(result["error"])
 
                 # Validate MRZ format
                 if not self._validate_mrz_format(result):
-                    raise Exception("Invalid MRZ format from Gemini")
+                    raise Exception("Invalid MRZ format from Mistral AI")
 
                 print(f"✅ MRZ extracted successfully")
                 return result
@@ -148,22 +141,19 @@ If MRZ is unreadable or image quality is too poor, return:
 
                 print(f"❌ Attempt {attempts} failed: {str(e)[:100]}")
 
-                # Check if error is related to quota/rate limit
-                if "429" in error_msg or "quota" in error_msg or "rate limit" in error_msg:
-                    print(f"⚠️ Quota/Rate limit error detected, rotating key...")
-                    self.rotate_key()
-                    time.sleep(0.5)  # Brief delay before retry
+                # Check if error is related to rate limit
+                if "429" in error_msg or "rate limit" in error_msg:
+                    print(f"⚠️ Rate limit error detected, waiting before retry...")
+                    time.sleep(2)
                     continue
                 elif "503" in error_msg or "500" in error_msg:
-                    print(f"⚠️ Server error, rotating key and retrying...")
-                    self.rotate_key()
+                    print(f"⚠️ Server error, waiting before retry...")
                     time.sleep(1)
                     continue
                 else:
-                    # Other errors - still try rotating
+                    # Other errors - still retry
                     if attempts < max_retries:
-                        print(f"⚠️ Unknown error, trying next key...")
-                        self.rotate_key()
+                        print(f"⚠️ Unknown error, retrying...")
                         time.sleep(0.5)
                     continue
 
@@ -173,8 +163,8 @@ If MRZ is unreadable or image quality is too poor, return:
             detail=f"Failed to scan passport after {max_retries} attempts. Last error: {str(last_error)}"
         )
 
-    def _parse_gemini_response(self, response_text: str) -> Dict:
-        """Parse Gemini response and extract JSON"""
+    def _parse_mistral_response(self, response_text: str) -> Dict:
+        """Parse Mistral response and extract JSON"""
         import json
         import re
 
@@ -193,7 +183,7 @@ If MRZ is unreadable or image quality is too poor, return:
         except json.JSONDecodeError as e:
             print(f"❌ JSON parse error: {e}")
             print(f"Response text: {response_text[:200]}")
-            raise Exception("Invalid JSON response from Gemini")
+            raise Exception("Invalid JSON response from Mistral AI")
 
     def _validate_mrz_format(self, result: Dict) -> bool:
         """Validate MRZ format (2 lines, 44 chars each)"""
@@ -363,12 +353,12 @@ class MRZParser:
 
 request_timestamps = {}
 RATE_LIMIT_WINDOW = 60
-MAX_REQUESTS_PER_WINDOW = 10
+MAX_REQUESTS_PER_WINDOW = 20
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png']
 
 def check_rate_limit(client_id: str) -> bool:
-    """Rate limiting: Max 10 requests per 60 seconds per client"""
+    """Rate limiting: Max 20 requests per 60 seconds per client"""
     current_time = time.time()
 
     if client_id not in request_timestamps:
@@ -420,8 +410,9 @@ def validate_image_file(file: UploadFile, contents: bytes) -> None:
 # API ENDPOINTS
 # ============================================
 
-# Initialize Gemini Scanner
-gemini_scanner = GeminiScanner()
+# Initialize Mistral Scanner
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "JWSVnIJhbnyhc80PY32AhKkxEbS4SFFi")
+mistral_scanner = MistralMRZScanner(api_key=MISTRAL_API_KEY)
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -434,15 +425,15 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "service": "passport-scanner-gemini",
-        "version": "2.0.0"
+        "service": "passport-scanner-mistral",
+        "version": "3.0.0"
     }
 
 
 @app.post("/scan")
 async def scan_passport(request: Request, file: UploadFile = File(...)):
     """
-    Main endpoint for passport scanning using Google Gemini API
+    Main endpoint for passport scanning using Mistral AI Vision API
     """
     try:
         # Rate limiting
@@ -465,9 +456,9 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
 
         print(f"📸 Processing image: {file.filename} ({len(contents)} bytes)")
 
-        # Scan with Gemini API
-        print("🤖 Scanning passport with Gemini AI...")
-        mrz_result = gemini_scanner.scan_passport_mrz(contents)
+        # Scan with Mistral AI
+        print("🤖 Scanning passport with Mistral AI Vision...")
+        mrz_result = mistral_scanner.scan_passport_mrz(contents)
 
         # Parse MRZ
         print("📋 Parsing MRZ data...")
@@ -479,7 +470,7 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "file_name": file.filename,
             "file_size": len(contents),
             "file_hash": hashlib.sha256(contents).hexdigest()[:16],
-            "scanner": "Google Gemini 2.5 Flash"
+            "scanner": "Mistral AI Pixtral-12B"
         }
 
         print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
@@ -505,12 +496,12 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
 async def test_endpoint():
     """Test endpoint"""
     return {
-        "message": "Passport Scanner with Google Gemini AI",
-        "version": "2.0.0",
+        "message": "Passport Scanner with Mistral AI Vision",
+        "version": "3.0.0",
         "status": "operational",
         "features": [
-            "Google Gemini 2.5 Flash Vision API",
-            "Round-Robin API Key Rotation",
+            "Mistral AI Pixtral-12B Vision API",
+            "Smart MRZ Cropping",
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
             "Rate Limiting",
