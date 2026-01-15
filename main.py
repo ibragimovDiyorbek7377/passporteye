@@ -84,7 +84,7 @@ class GeminiScanner:
                 image = Image.open(io.BytesIO(image_bytes))
 
                 # Initialize Gemini Vision model
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                model = genai.GenerativeModel('gemini-2.5-flash')
 
                 # Optimized prompt for MRZ-only image extraction
                 prompt = """You are an expert passport MRZ (Machine Readable Zone) OCR system.
@@ -479,7 +479,7 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "file_name": file.filename,
             "file_size": len(contents),
             "file_hash": hashlib.sha256(contents).hexdigest()[:16],
-            "scanner": "Google Gemini 1.5 Flash"
+            "scanner": "Google Gemini 2.5 Flash"
         }
 
         print(f"✅ Passport scanned successfully: {parsed_data['passport_number']}")
@@ -509,7 +509,7 @@ async def test_endpoint():
         "version": "2.0.0",
         "status": "operational",
         "features": [
-            "Google Gemini 1.5 Flash Vision API",
+            "Google Gemini 2.5 Flash Vision API",
             "Round-Robin API Key Rotation",
             "ICAO 9303 TD3 Parsing",
             "Checksum Validation",
