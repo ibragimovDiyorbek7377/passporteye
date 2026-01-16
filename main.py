@@ -53,8 +53,11 @@ class MistralMRZScanner:
             api_key=api_key,
             timeout_ms=60000  # 60 second timeout for API calls
         )
-        self.model = "mistral-ocr-latest"
-        print(f"🤖 Mistral MRZ Scanner initialized with model: {self.model}", flush=True)
+        self.ocr_model = "mistral-ocr-latest"
+        self.extraction_model = "mistral-small-latest"  # Lighter model for text extraction
+        print(f"🤖 Mistral MRZ Scanner initialized", flush=True)
+        print(f"   OCR Model: {self.ocr_model}", flush=True)
+        print(f"   Extraction Model: {self.extraction_model}", flush=True)
         print(f"⏱️  Timeout configured: 60 seconds", flush=True)
 
     def scan_passport_mrz(self, image_bytes: bytes, max_retries: int = 3) -> Dict:
@@ -78,7 +81,7 @@ class MistralMRZScanner:
 
                 # Use Mistral OCR API as per official documentation
                 ocr_response = self.client.ocr.process(
-                    model=self.model,
+                    model=self.ocr_model,
                     document={
                         "type": "image_url",
                         "image_url": f"data:image/jpeg;base64,{base64_image}"
@@ -96,8 +99,15 @@ class MistralMRZScanner:
                 response_text = self._extract_ocr_text(ocr_response)
                 print(f"📝 Extracted OCR text: {response_text[:100]}...", flush=True)
 
-                # Parse response
-                result = self._parse_mistral_response(response_text)
+                # Try to parse as JSON first
+                try:
+                    result = self._parse_as_json(response_text)
+                    print(f"✅ Successfully parsed as JSON", flush=True)
+                except Exception as json_error:
+                    # If JSON parsing fails, use Mistral to extract structured data
+                    print(f"⚠️  JSON parsing failed, using Mistral extraction model...", flush=True)
+                    result = self._extract_mrz_with_mistral(response_text)
+                    print(f"✅ Extracted MRZ using Mistral model", flush=True)
 
                 if "error" in result:
                     raise Exception(result["error"])
@@ -242,8 +252,8 @@ class MistralMRZScanner:
 
         return mrz_lines
 
-    def _parse_mistral_response(self, response_text: str) -> Dict:
-        """Parse Mistral response and extract JSON"""
+    def _parse_as_json(self, response_text: str) -> Dict:
+        """Parse response text as JSON"""
         import json
         import re
 
@@ -263,6 +273,65 @@ class MistralMRZScanner:
             print(f"❌ JSON parse error: {e}", flush=True)
             print(f"Response text: {response_text[:200]}", flush=True)
             raise Exception("Invalid JSON response from Mistral OCR API")
+
+    def _extract_mrz_with_mistral(self, ocr_text: str) -> Dict:
+        """
+        Use Mistral chat model to extract structured MRZ data from OCR text
+        This is used when OCR returns plain text instead of structured JSON
+        """
+        import json
+        import re
+
+        # Create a prompt to extract MRZ lines
+        prompt = f"""You are an expert at reading passport Machine Readable Zones (MRZ).
+
+The OCR text from a passport is:
+{ocr_text}
+
+Extract the two MRZ lines from this text. MRZ lines for passports (TD3 format) have these characteristics:
+- Exactly 44 characters each
+- Line 1 starts with 'P<' followed by country code and name
+- Line 2 contains passport number, nationality, dates, and check digits
+- Uses '<' as filler character
+
+Analyze the text and extract the two MRZ lines. The text may be concatenated or have special characters at the end.
+
+Return ONLY a JSON object in this exact format (no markdown, no explanation):
+{{"line1": "the first 44-character MRZ line", "line2": "the second 44-character MRZ line"}}"""
+
+        print(f"🔄 Sending to Mistral extraction model...", flush=True)
+
+        # Call Mistral chat API
+        response = self.client.chat.complete(
+            model=self.extraction_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        # Extract content from response
+        if hasattr(response, 'choices') and len(response.choices) > 0:
+            content = response.choices[0].message.content
+            print(f"📝 Mistral extraction response: {content[:200]}", flush=True)
+
+            # Clean and parse JSON
+            cleaned = content.strip()
+            cleaned = re.sub(r'^```json\s*', '', cleaned)
+            cleaned = re.sub(r'^```\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+            cleaned = cleaned.strip()
+
+            try:
+                result = json.loads(cleaned)
+                return result
+            except json.JSONDecodeError as e:
+                print(f"❌ Failed to parse Mistral extraction response as JSON: {e}", flush=True)
+                raise Exception("Mistral extraction model did not return valid JSON")
+        else:
+            raise Exception("Empty response from Mistral extraction model")
 
     def _validate_mrz_format(self, result: Dict) -> bool:
         """Validate MRZ format (2 lines, 44 chars each)"""
