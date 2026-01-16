@@ -171,6 +171,7 @@ class MistralMRZScanner:
     def _extract_ocr_text(self, ocr_response) -> str:
         """Extract text from Mistral OCR API response"""
         import html
+        import re
 
         try:
             # Mistral OCR API returns a response with .pages attribute
@@ -187,6 +188,16 @@ class MistralMRZScanner:
 
                 # Decode HTML entities (e.g., &lt; -> <, &gt; -> >)
                 full_text = html.unescape(full_text)
+
+                # OCR Error Corrections for MRZ-specific patterns
+                # Fix 1: Remove HTML/XML-like tags that OCR might create
+                full_text = re.sub(r'</[^>]+>', '', full_text)  # Remove closing tags like </ugli>
+
+                # Fix 2: Convert ">< " pattern to "<<" (common OCR error)
+                full_text = full_text.replace('><', '<<')
+
+                # Fix 3: Fix spacing issues around chevrons
+                full_text = full_text.replace('< ', '<').replace(' <', '<')
 
                 print(f"📝 Extracted markdown text: {full_text[:200]}", flush=True)
 
@@ -404,17 +415,28 @@ Return this exact JSON format (no markdown):
     def _manual_mrz_extraction(self, text: str) -> Optional[Dict]:
         """Manually extract MRZ lines from text without AI"""
         import html
+        import re
 
         # Decode HTML entities
         text = html.unescape(text)
+
+        # Apply OCR error corrections
+        text = re.sub(r'</[^>]+>', '', text)  # Remove closing tags
+        text = text.replace('><', '<<')  # Fix >< to <<
+        text = text.replace('< ', '<').replace(' <', '<')  # Remove spaces around <
 
         lines = text.split('\n')
         mrz_candidates = []
 
         for line in lines:
             line = line.strip()
+            # Apply same corrections to each line
+            line = re.sub(r'</[^>]+>', '', line)
+            line = line.replace('><', '<<')
+            line = line.replace('< ', '<').replace(' <', '<')
+
             # Look for lines that start with P< or have MRZ characteristics
-            if line.startswith('P<') or (len(line) >= 40 and '<' in line):
+            if line.startswith('P<') or line.startswith('p<') or (len(line) >= 40 and '<' in line):
                 mrz_candidates.append(line)
 
         # Try concatenated format first (most common issue)
@@ -464,11 +486,17 @@ Return this exact JSON format (no markdown):
     def _normalize_mrz_line(self, line: str) -> str:
         """Normalize MRZ line to exactly 44 characters"""
         import html
+        import re
 
         # Decode HTML entities
         line = html.unescape(line)
 
-        # Remove any whitespace
+        # Apply OCR error corrections
+        line = re.sub(r'</[^>]+>', '', line)  # Remove closing tags like </name>
+        line = line.replace('><', '<<')  # Fix >< to <<
+        line = line.replace('< ', '<').replace(' <', '<')  # Remove spaces around <
+
+        # Remove any other whitespace
         line = line.strip()
 
         # Convert to uppercase (MRZ standard)
@@ -561,57 +589,93 @@ class MRZParser:
         return f"{dd}.{mm}.{yyyy}"
 
     @staticmethod
+    def ocr_error_correction_numbers(text: str) -> str:
+        """Correct common OCR errors in number fields (O -> 0)"""
+        return text.replace('O', '0').replace('o', '0')
+
+    @staticmethod
+    def ocr_error_correction_letters(text: str) -> str:
+        """Correct common OCR errors in letter fields (0 -> O)"""
+        return text.replace('0', 'O')
+
+    @staticmethod
     def parse_mrz(line1: str, line2: str) -> Dict:
         """
-        Parse complete TD3 MRZ (2 lines x 44 chars)
-        Line 1: Document type, Country, Names
-        Line 2: Passport #, Nationality, DOB, Sex, Expiry, Personal #
+        Parse complete TD3 MRZ (2 lines x 44 chars) following ICAO 9303 standard STRICTLY
+        Line 1: P<CCCSURNAME<<GIVEN<NAMES<<<<<<<<<<<<<<<<<<
+        Line 2: NNNNNNNNNNCYYYMMDDCSXYYYMMDDCZZZZZZZZZZZZZCC
+
+        CRITICAL: Uses FIXED character positions for Line 2 parsing
         """
-        # Clean lines
+        # Clean and uppercase
         line1 = line1.strip().upper()
         line2 = line2.strip().upper()
+
+        print(f"🔍 Parsing MRZ lines:", flush=True)
+        print(f"   Line 1: {line1}", flush=True)
+        print(f"   Line 2: {line2}", flush=True)
 
         if len(line1) != 44 or len(line2) != 44:
             raise ValueError(f"Invalid MRZ format. Line1: {len(line1)}, Line2: {len(line2)}")
 
-        # Parse Line 1
-        doc_type = line1[0]
+        # ===== LINE 1 PARSING (Name Parsing with << separator) =====
+        doc_type = line1[0]  # Should be 'P' for passport
         country_code = line1[2:5].replace('<', '').strip()
 
-        names_section = line1[5:44].replace('<', ' ').strip()
-        name_parts = [part for part in names_section.split('  ') if part]
+        # Name section starts at position 5
+        names_section = line1[5:44]
 
-        surname = name_parts[0] if name_parts else ""
-        given_names = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ""
+        # Find the double chevron separator <<
+        if '<<' in names_section:
+            separator_pos = names_section.index('<<')
+            surname_raw = names_section[:separator_pos]
+            given_names_raw = names_section[separator_pos + 2:]  # Skip <<
 
-        # Parse Line 2
-        passport_number = line2[0:9].replace('<', '').strip()
+            # Clean surname: replace single < with space, remove trailing <
+            surname = surname_raw.replace('<', ' ').strip()
+
+            # Clean given names: replace single < with space, remove trailing <
+            given_names = given_names_raw.replace('<', ' ').strip()
+        else:
+            # Fallback: no clear separator
+            surname = names_section.replace('<', ' ').strip()
+            given_names = ""
+
+        # Apply OCR correction to names (0 -> O)
+        surname = MRZParser.ocr_error_correction_letters(surname)
+        given_names = MRZParser.ocr_error_correction_letters(given_names)
+
+        # ===== LINE 2 PARSING (STRICT FIXED POSITIONS) =====
+        # Extract by exact indices as per ICAO 9303
+        passport_number_raw = line2[0:9]
         passport_check = line2[9]
-
-        nationality = line2[10:13].replace('<', '').strip()
-
-        dob = line2[13:19]
+        nationality = line2[10:13]
+        dob_raw = line2[13:19]
         dob_check = line2[19]
-
-        sex = line2[20].replace('<', '')
-
-        expiry = line2[21:27]
+        sex = line2[20]
+        expiry_raw = line2[21:27]
         expiry_check = line2[27]
-
-        personal_number = line2[28:42].replace('<', '').strip()
+        personal_number_raw = line2[28:42]  # 14 characters (PINFL for UZB)
         personal_check = line2[42]
-
         composite_check = line2[43]
+
+        # Apply OCR corrections
+        passport_number = MRZParser.ocr_error_correction_numbers(passport_number_raw).replace('<', '').strip()
+        nationality = nationality.replace('<', '').strip()
+        dob = MRZParser.ocr_error_correction_numbers(dob_raw)
+        expiry = MRZParser.ocr_error_correction_numbers(expiry_raw)
+        personal_number = MRZParser.ocr_error_correction_numbers(personal_number_raw).replace('<', '').strip()
+        sex = sex.replace('<', '')
 
         # Validate checksums
         validations = {
-            "passport_number_valid": MRZParser.validate_checksum(line2[0:9], passport_check),
-            "dob_valid": MRZParser.validate_checksum(dob, dob_check),
-            "expiry_valid": MRZParser.validate_checksum(expiry, expiry_check),
-            "personal_number_valid": MRZParser.validate_checksum(line2[28:42], personal_check),
+            "passport_number_valid": MRZParser.validate_checksum(passport_number_raw, passport_check),
+            "dob_valid": MRZParser.validate_checksum(dob_raw, dob_check),
+            "expiry_valid": MRZParser.validate_checksum(expiry_raw, expiry_check),
+            "personal_number_valid": MRZParser.validate_checksum(personal_number_raw, personal_check),
         }
 
-        # Composite check
+        # Composite check (entire line 2 except last check digit)
         composite_data = line2[0:10] + line2[13:20] + line2[21:43]
         validations["composite_valid"] = MRZParser.validate_checksum(composite_data, composite_check)
 
@@ -622,16 +686,27 @@ class MRZParser:
         # Overall validation
         all_checks_valid = all(validations.values())
 
+        print(f"✅ Parsed data:", flush=True)
+        print(f"   Name: {given_names} {surname}", flush=True)
+        print(f"   Passport: {passport_number}", flush=True)
+        print(f"   PINFL: {personal_number}", flush=True)
+        print(f"   Validation: {'PASS' if all_checks_valid else 'FAIL'}", flush=True)
+
         return {
+            "surname": surname,
+            "name": given_names,
+            "passport_number": passport_number,
+            "birth_date": MRZParser.format_date(dob),
+            "expiry_date": MRZParser.format_date(expiry),
+            "sex": sex if sex in ['M', 'F'] else 'F',  # Default to F if unclear
+            "nationality": nationality,
+            "pinfl": personal_number,  # 14-digit PINFL for Uzbek passports
+            # Legacy fields for backwards compatibility
             "document_type": doc_type,
             "country_code": country_code,
-            "surname": surname.strip(),
-            "given_names": given_names.strip(),
-            "passport_number": passport_number,
-            "nationality": nationality,
+            "given_names": given_names,
             "date_of_birth": MRZParser.format_date(dob),
             "date_of_birth_raw": dob,
-            "sex": sex if sex in ['M', 'F'] else 'Unknown',
             "date_of_expiry": MRZParser.format_date(expiry),
             "date_of_expiry_raw": expiry,
             "personal_number": personal_number,
