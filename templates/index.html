@@ -47,19 +47,19 @@
             height: 100%;
             z-index: 10;
             display: flex;
-            align-items: center;
+            align-items: flex-end;
             justify-content: center;
+            padding-bottom: 25vh; /* Position in bottom-third of screen */
             pointer-events: none;
         }
 
         .scanner-cutout {
-            width: 85%;
-            max-width: 500px;
-            height: 160px;
-            border-radius: 12px;
-            border: 2px solid rgba(255, 255, 255, 0.5);
+            width: 95%;
+            height: 140px;
+            border-radius: 8px;
+            border: 2px solid var(--customs-green);
             /* THE MAGIC: Massive box-shadow creates the dark overlay around the cutout */
-            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.7);
             position: relative;
         }
 
@@ -148,15 +148,16 @@
         /* Label above scanner */
         .scanner-label {
             position: absolute;
-            top: -40px;
+            top: -35px;
             left: 50%;
             transform: translateX(-50%);
             color: #ffffff;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             text-align: center;
             text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
             white-space: nowrap;
+            width: 100%;
         }
 
         /* ===== LAYER 3: UI ELEMENTS (Top & Bottom) ===== */
@@ -192,10 +193,11 @@
         }
 
         .header-title {
-            font-size: 17px;
-            font-weight: 600;
+            font-size: 11px;
+            font-weight: 700;
             color: #ffffff;
-            letter-spacing: 0.3px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
         }
 
         .flash-btn {
@@ -552,7 +554,7 @@
     <!-- ===== LAYER 2: DARK OVERLAY MASK (z-index: 10) ===== -->
     <div class="overlay-mask">
         <div class="scanner-cutout" id="scanner-cutout">
-            <div class="scanner-label">Position MRZ code within this frame</div>
+            <div class="scanner-label">MRZ kodni (2 qator) ramka ichiga to'g'rilang</div>
             <div class="corner tl"></div>
             <div class="corner tr"></div>
             <div class="corner bl"></div>
@@ -565,7 +567,7 @@
     <!-- iOS-style Header -->
     <div class="header">
         <button class="header-btn" id="cancel-btn">Cancel</button>
-        <div class="header-title">MRZ Scanner</div>
+        <div class="header-title">CUSTOMS COMMITTEE OF UZBEKISTAN</div>
         <button class="flash-btn" id="flash-btn">⚡</button>
     </div>
 
