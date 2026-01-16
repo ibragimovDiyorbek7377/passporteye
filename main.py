@@ -128,13 +128,45 @@ Example of correct response:
 
             print(f"📤 Sending request to Mistral Vision API...", flush=True)
 
-            response = self.client.chat.complete(
-                model=self.vision_model,
-                messages=messages,
-                temperature=0.0,  # Zero temperature for deterministic OCR
-                max_tokens=500
-                # Note: response_format not supported for vision models
-            )
+            # Retry logic for transient errors (503, network issues, etc.)
+            max_retries = 4
+            retry_delays = [2, 4, 8, 16]  # Exponential backoff in seconds
+            last_error = None
+
+            for attempt in range(max_retries):
+                try:
+                    response = self.client.chat.complete(
+                        model=self.vision_model,
+                        messages=messages,
+                        temperature=0.0,  # Zero temperature for deterministic OCR
+                        max_tokens=500
+                        # Note: response_format not supported for vision models
+                    )
+                    break  # Success, exit retry loop
+
+                except Exception as api_error:
+                    last_error = api_error
+                    error_str = str(api_error).lower()
+
+                    # Check if it's a retryable error
+                    is_retryable = (
+                        '503' in error_str or
+                        'service unavailable' in error_str or
+                        'timeout' in error_str or
+                        'upstream connect error' in error_str or
+                        'reset' in error_str or
+                        'overflow' in error_str or
+                        'network' in error_str
+                    )
+
+                    if is_retryable and attempt < max_retries - 1:
+                        delay = retry_delays[attempt]
+                        print(f"⚠️  API error (attempt {attempt + 1}/{max_retries}): {str(api_error)}", flush=True)
+                        print(f"🔄 Retrying in {delay} seconds...", flush=True)
+                        time.sleep(delay)
+                    else:
+                        # Not retryable or last attempt, re-raise
+                        raise
 
             # Extract response content
             if hasattr(response, 'choices') and len(response.choices) > 0:
@@ -356,18 +388,19 @@ class StrictMRZParser:
 
         all_valid = all(validations.values())
 
-        print(f"✅ Parsed:", flush=True)
+        print(f"✅ Data Extracted Successfully:", flush=True)
         print(f"   Passport: {passport_number}", flush=True)
         print(f"   Name: {given_names} {surname}", flush=True)
         print(f"   PINFL: {pinfl}", flush=True)
-        print(f"   Validation: {'PASS' if all_valid else 'FAIL'}", flush=True)
+        print(f"   Checksum Validation: {'PASS ✓' if all_valid else 'WARNING ⚠️'}", flush=True)
 
         # Debug: Show which validations failed
         if not all_valid:
-            print(f"   ⚠️  Validation details:", flush=True)
+            print(f"   ℹ️  Checksum details (data is still usable):", flush=True)
             for check_name, is_valid in validations.items():
-                status = "✓" if is_valid else "✗"
+                status = "✓" if is_valid else "⚠️"
                 print(f"      {status} {check_name}", flush=True)
+            print(f"   Note: Invalid checksums may indicate OCR errors or test/damaged passport", flush=True)
 
         return {
             "passport_number": passport_number,
@@ -385,7 +418,8 @@ class StrictMRZParser:
             "document_type": doc_type,
             "country_code": country_code,
             "validations": validations,
-            "validation_status": "PASS" if all_valid else "FAIL",
+            "validation_status": "VALID" if all_valid else "WARNING",
+            "validation_message": "All checksums valid" if all_valid else "Checksums invalid - may indicate OCR errors or damaged passport (data still extracted)",
             "raw_mrz": {
                 "line1": line1,
                 "line2": line2
