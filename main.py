@@ -61,52 +61,28 @@ class MistralVisionScanner:
         print(f"🔍 Scanning MRZ strip ({len(image_bytes)} bytes)...", flush=True)
 
         try:
+            # Preprocess image for better OCR
+            image_bytes = self._preprocess_image(image_bytes)
+
             # Convert to base64
             base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-            # System prompt for strict character-by-character grid reading
-            system_prompt = """ROLE: Strict ICAO 9303 MRZ Decoder.
+            # Simplified and more direct prompt to prevent hallucinations
+            system_prompt = """You are an OCR system that reads MRZ (Machine Readable Zone) from passport images.
 
-INPUT: A cropped image containing ONLY 2 lines of MRZ text (Machine Readable Zone).
+The image shows 2 lines of text from the bottom of a passport. Each line has exactly 44 characters.
 
-INSTRUCTION: Transcribe characters visually in a strict grid format. Read each character position carefully.
+Read the text character by character and return it in this exact JSON format:
+{"line1": "first 44 characters", "line2": "second 44 characters"}
 
-MRZ FORMAT (TD3 Passport - 44 characters per line):
-LINE 1: P<UZBBEKTURDIYEVA<<KAMOLA<<<<<<<<<<<<<<<<<<
-LINE 2: FA12345679UZB0001015F3112250<<<<<<<<<<<<<<08
+Important rules:
+- Use '<' for filler/space characters
+- Each line must be EXACTLY 44 characters
+- Return ONLY the JSON, no other text
+- Do NOT use markdown code blocks
+- Do NOT add explanations
 
-LINE 2 DECODING RULES (Fixed Character Indices):
-- Position 0-8: Passport Number (9 chars) - First 2 MUST be LETTERS, rest DIGITS
-- Position 9: Check digit
-- Position 10-12: Nationality (3 chars)
-- Position 13-18: Birth Date YYMMDD (6 digits)
-- Position 19: Check digit
-- Position 20: Sex (1 char: M or F)
-- Position 21-26: Expiry Date YYMMDD (6 digits)
-- Position 27: Check digit
-- Position 28-41: Personal Number/PINFL (14 chars for UZB)
-- Position 42: Check digit
-- Position 43: Composite check digit
-
-OCR ERROR CORRECTIONS:
-1. If nationality is 'ZBO', 'LZB', 'USB', 'U2B', 'UZ8', 'O2B' -> Force to 'UZB'
-2. In date fields (birth/expiry): If you see letter 'O', convert to digit '0'
-3. In passport number: First 2 chars MUST be letters (convert 0->O), remaining MUST be digits (convert O->0)
-4. Filler character '<' may appear as chevron, use '<' in output
-
-CRITICAL: Each line must be EXACTLY 44 characters. Use '<' as filler if needed.
-
-OUTPUT FORMAT - EXTREMELY IMPORTANT:
-You MUST respond with ONLY the JSON object below. Do NOT add:
-- Any explanation or commentary
-- Markdown code blocks (no ```)
-- Additional text before or after the JSON
-- Newlines or formatting around the JSON
-
-Return EXACTLY this structure and nothing else:
-{"line1": "44-character line 1", "line2": "44-character line 2"}
-
-Example of correct response:
+Example:
 {"line1": "P<UZBBEKTURDIYEVA<<KAMOLA<<<<<<<<<<<<<<<<<<", "line2": "FA12345679UZB0001015F3112250<<<<<<<<<<<<<<08"}"""
 
             # Call Mistral Vision API
@@ -171,7 +147,7 @@ Example of correct response:
             # Extract response content
             if hasattr(response, 'choices') and len(response.choices) > 0:
                 content = response.choices[0].message.content
-                print(f"📥 Received response: {content[:200]}...", flush=True)
+                print(f"📥 Received response ({len(content)} chars): {content[:500]}", flush=True)
 
                 # Try multiple extraction methods
                 result = None
@@ -222,7 +198,9 @@ Example of correct response:
                         }
                         print(f"✅ Extracted using regex fallback", flush=True)
                     else:
-                        raise ValueError(f"Failed to extract MRZ lines. Response: {content[:500]}")
+                        print(f"❌ All extraction methods failed!", flush=True)
+                        print(f"📄 Complete API response:\n{content}\n", flush=True)
+                        raise ValueError(f"Mistral Vision API returned invalid format. Please ensure the image shows the MRZ zone clearly. Response preview: {content[:300]}")
 
                 if not result:
                     raise ValueError(f"Failed to parse response. Content: {content[:500]}")
@@ -248,6 +226,47 @@ Example of correct response:
                 status_code=500,
                 detail=f"Failed to scan MRZ: {str(e)}"
             )
+
+    def _preprocess_image(self, image_bytes: bytes) -> bytes:
+        """
+        Preprocess image to enhance MRZ readability
+        - Convert to grayscale
+        - Increase contrast
+        - Sharpen text
+        """
+        try:
+            from PIL import ImageEnhance, ImageFilter
+
+            # Open image
+            img = Image.open(io.BytesIO(image_bytes))
+
+            # Convert to grayscale for better OCR
+            img = img.convert('L')
+
+            # Increase contrast (makes text stand out)
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.0)  # 2x contrast
+
+            # Increase sharpness (makes edges crisper)
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(2.0)  # 2x sharpness
+
+            # Apply slight sharpen filter
+            img = img.filter(ImageFilter.SHARPEN)
+
+            # Save to bytes
+            output = io.BytesIO()
+            img.save(output, format='JPEG', quality=95)
+            output.seek(0)
+
+            preprocessed_bytes = output.read()
+            print(f"📊 Image preprocessed: {len(image_bytes)} → {len(preprocessed_bytes)} bytes", flush=True)
+
+            return preprocessed_bytes
+
+        except Exception as e:
+            print(f"⚠️  Image preprocessing failed: {e}, using original", flush=True)
+            return image_bytes
 
     def _normalize_line(self, line: str) -> str:
         """Normalize MRZ line to exactly 44 characters"""
