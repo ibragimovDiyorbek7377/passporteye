@@ -132,8 +132,8 @@ Example of correct response:
                 model=self.vision_model,
                 messages=messages,
                 temperature=0.0,  # Zero temperature for deterministic OCR
-                max_tokens=500,
-                response_format={"type": "json_object"}  # Force JSON output
+                max_tokens=500
+                # Note: response_format not supported for vision models
             )
 
             # Extract response content
@@ -361,6 +361,13 @@ class StrictMRZParser:
         print(f"   Name: {given_names} {surname}", flush=True)
         print(f"   PINFL: {pinfl}", flush=True)
         print(f"   Validation: {'PASS' if all_valid else 'FAIL'}", flush=True)
+
+        # Debug: Show which validations failed
+        if not all_valid:
+            print(f"   ⚠️  Validation details:", flush=True)
+            for check_name, is_valid in validations.items():
+                status = "✓" if is_valid else "✗"
+                print(f"      {status} {check_name}", flush=True)
 
         return {
             "passport_number": passport_number,
