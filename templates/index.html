@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Customs Committee Passport Scanner</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
     <style>
         * {
             margin: 0;
@@ -16,7 +15,6 @@
         :root {
             --customs-green: #089000;
             --ultra-dark: #050505;
-            --mask-dark: rgba(0, 0, 0, 0.85);
         }
 
         body {
@@ -24,174 +22,179 @@
             background: var(--ultra-dark);
             color: #ffffff;
             overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
             -webkit-font-smoothing: antialiased;
             letter-spacing: 0.3px;
         }
 
         /* Header Strip */
         .header {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background: rgba(0, 0, 0, 0.7);
-            backdrop-filter: blur(10px);
-            padding: 16px 0;
+            padding: 20px 16px;
             text-align: center;
-            z-index: 100;
+            background: var(--ultra-dark);
             border-bottom: 1px solid var(--customs-green);
         }
 
         .header h1 {
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 700;
             color: #ffffff;
-            letter-spacing: 1px;
+            letter-spacing: 1.2px;
             text-transform: uppercase;
         }
 
-        /* Full-screen camera layer */
-        .camera-layer {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            background: #000;
+        /* Main Content Area - Solid Black Background */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: var(--ultra-dark);
+            padding: 20px;
+            gap: 12px;
         }
 
-        #video-feed {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
+        /* Label above scanner */
+        .scanner-label {
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
         }
 
-        /* The Sniper Scope - Mask Overlay with Cutout */
-        .mask-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            pointer-events: none;
-            z-index: 50;
-        }
-
-        /* Dark mask with transparent hole */
-        .mask-overlay::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: var(--mask-dark);
-            /* Create cutout hole using box-shadow */
-            box-shadow: 0 0 0 100vh var(--mask-dark);
-        }
-
-        /* The MRZ Cutout Box */
-        .mrz-cutout {
-            position: absolute;
-            bottom: 20vh;
-            left: 50%;
-            transform: translateX(-50%);
+        /* THE SCANNER STRIP - The ONLY place where camera is visible */
+        .scanner-strip {
             width: 90%;
-            height: 15vh;
-            border: 2px solid var(--customs-green);
-            border-radius: 4px;
+            max-width: 600px;
+            height: 140px;
+            position: relative;
+            overflow: hidden; /* CRITICAL: This hides everything outside */
+            border: 3px solid var(--customs-green);
+            border-radius: 12px;
             box-shadow:
-                0 0 20px var(--customs-green),
-                inset 0 0 20px rgba(8, 144, 0, 0.2);
+                0 0 30px rgba(8, 144, 0, 0.4),
+                inset 0 0 30px rgba(8, 144, 0, 0.1);
             animation: pulse-glow 2s ease-in-out infinite;
+            background: #000; /* Fallback before camera loads */
         }
 
         @keyframes pulse-glow {
             0%, 100% {
                 box-shadow:
-                    0 0 20px var(--customs-green),
-                    inset 0 0 20px rgba(8, 144, 0, 0.2);
+                    0 0 30px rgba(8, 144, 0, 0.4),
+                    inset 0 0 30px rgba(8, 144, 0, 0.1);
             }
             50% {
                 box-shadow:
-                    0 0 30px var(--customs-green),
-                    inset 0 0 30px rgba(8, 144, 0, 0.3);
+                    0 0 40px rgba(8, 144, 0, 0.6),
+                    inset 0 0 40px rgba(8, 144, 0, 0.2);
             }
         }
 
-        /* Corner markers */
-        .mrz-cutout::before,
-        .mrz-cutout::after {
-            content: '';
+        /* Video element - INSIDE the scanner strip */
+        #video-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Zoom to fill the strip */
+            display: block;
+        }
+
+        /* Corner markers for scanner strip */
+        .corner {
             position: absolute;
-            width: 30px;
-            height: 30px;
+            width: 25px;
+            height: 25px;
             border: 3px solid var(--customs-green);
         }
 
-        .mrz-cutout::before {
+        .corner.tl {
             top: -3px;
             left: -3px;
             border-right: none;
             border-bottom: none;
         }
 
-        .mrz-cutout::after {
+        .corner.tr {
             top: -3px;
             right: -3px;
             border-left: none;
             border-bottom: none;
         }
 
-        .corner-bl,
-        .corner-br {
-            position: absolute;
-            width: 30px;
-            height: 30px;
-            border: 3px solid var(--customs-green);
-        }
-
-        .corner-bl {
+        .corner.bl {
             bottom: -3px;
             left: -3px;
             border-right: none;
             border-top: none;
         }
 
-        .corner-br {
+        .corner.br {
             bottom: -3px;
             right: -3px;
             border-left: none;
             border-top: none;
         }
 
-        /* Label above cutout */
-        .cutout-label {
+        /* Scanning animation line */
+        .scan-line {
+            display: none;
             position: absolute;
-            top: -35px;
-            left: 50%;
-            transform: translateX(-50%);
-            color: #ffffff;
-            font-size: 13px;
-            font-weight: 600;
-            white-space: nowrap;
-            text-align: center;
-            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+            width: 100%;
+            height: 2px;
+            background: var(--customs-green);
+            box-shadow: 0 0 15px var(--customs-green);
+            animation: scan-move 1.5s ease-in-out infinite;
+            z-index: 10;
+        }
+
+        .scanner-strip.scanning .scan-line {
+            display: block;
+        }
+
+        @keyframes scan-move {
+            0%, 100% {
+                top: 0;
+                opacity: 0;
+            }
+            50% {
+                top: 100%;
+                opacity: 1;
+            }
+        }
+
+        /* Intense scanning pulse */
+        .scanner-strip.scanning {
+            animation: scan-pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes scan-pulse {
+            0%, 100% {
+                border-color: var(--customs-green);
+                box-shadow:
+                    0 0 30px rgba(8, 144, 0, 0.4),
+                    inset 0 0 30px rgba(8, 144, 0, 0.1);
+            }
+            50% {
+                border-color: #0aff00;
+                box-shadow:
+                    0 0 50px rgba(10, 255, 0, 0.8),
+                    inset 0 0 50px rgba(10, 255, 0, 0.3);
+            }
         }
 
         /* Controls at bottom */
         .controls {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            padding: 24px;
-            z-index: 60;
+            padding: 30px 20px;
+            background: var(--ultra-dark);
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 16px;
-            background: linear-gradient(to top, rgba(5, 5, 5, 0.95) 0%, transparent 100%);
         }
 
         /* Shutter button */
@@ -210,16 +213,15 @@
         }
 
         .shutter-btn::before {
-            content: '';
+            content: 'SCAN';
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            background: var(--customs-green);
-            transition: all 0.2s ease;
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--customs-green);
+            letter-spacing: 1px;
         }
 
         .shutter-btn:active {
@@ -229,11 +231,6 @@
                 inset 0 0 30px rgba(8, 144, 0, 0.4);
         }
 
-        .shutter-btn:active::before {
-            width: 50px;
-            height: 50px;
-        }
-
         .shutter-btn:disabled {
             opacity: 0.3;
             cursor: not-allowed;
@@ -241,14 +238,10 @@
 
         /* Footer */
         .footer {
-            position: fixed;
-            bottom: 8px;
-            left: 0;
-            right: 0;
             text-align: center;
             color: #6b7280;
-            font-size: 11px;
-            z-index: 40;
+            font-size: 10px;
+            padding-bottom: 12px;
             font-weight: 500;
         }
 
@@ -455,56 +448,6 @@
             }
         }
 
-        /* Scanning animation */
-        .scanning .mrz-cutout {
-            animation: scan-pulse 1s ease-in-out infinite;
-        }
-
-        @keyframes scan-pulse {
-            0%, 100% {
-                border-color: var(--customs-green);
-                box-shadow:
-                    0 0 20px var(--customs-green),
-                    inset 0 0 20px rgba(8, 144, 0, 0.2);
-            }
-            50% {
-                border-color: #0aff00;
-                box-shadow:
-                    0 0 40px #0aff00,
-                    inset 0 0 40px rgba(10, 255, 0, 0.4);
-            }
-        }
-
-        .scan-line {
-            display: none;
-            position: absolute;
-            width: 100%;
-            height: 2px;
-            background: var(--customs-green);
-            box-shadow: 0 0 10px var(--customs-green);
-            animation: scan-move 1.5s ease-in-out infinite;
-        }
-
-        .scanning .scan-line {
-            display: block;
-        }
-
-        @keyframes scan-move {
-            0%, 100% {
-                top: 0;
-                opacity: 0;
-            }
-            50% {
-                top: 100%;
-                opacity: 1;
-            }
-        }
-
-        /* Hide elements */
-        .hidden {
-            display: none !important;
-        }
-
         /* Canvas for cropping (hidden) */
         #crop-canvas {
             display: none;
@@ -517,18 +460,19 @@
         <h1>CUSTOMS COMMITTEE OF UZBEKISTAN</h1>
     </div>
 
-    <!-- Camera Layer -->
-    <div class="camera-layer">
-        <video id="video-feed" autoplay playsinline></video>
-    </div>
+    <!-- Main Content - Solid Black Background -->
+    <div class="main-content">
+        <!-- Label -->
+        <div class="scanner-label">MRZ kodni shu yerga to'g'rilang</div>
 
-    <!-- Mask Overlay with MRZ Cutout -->
-    <div class="mask-overlay">
-        <div class="mrz-cutout" id="mrz-cutout">
-            <div class="corner-bl"></div>
-            <div class="corner-br"></div>
+        <!-- THE SCANNER STRIP - Camera is ONLY visible here -->
+        <div class="scanner-strip" id="scanner-strip">
+            <video id="video-feed" autoplay playsinline></video>
+            <div class="corner tl"></div>
+            <div class="corner tr"></div>
+            <div class="corner bl"></div>
+            <div class="corner br"></div>
             <div class="scan-line"></div>
-            <div class="cutout-label">MRZ kodni ramka ichiga joylashtiring</div>
         </div>
     </div>
 
@@ -581,7 +525,7 @@
         // DOM elements
         const videoFeed = document.getElementById('video-feed');
         const shutterBtn = document.getElementById('shutter-btn');
-        const mrzCutout = document.getElementById('mrz-cutout');
+        const scannerStrip = document.getElementById('scanner-strip');
         const loading = document.getElementById('loading');
         const errorToast = document.getElementById('error-toast');
         const resultsModal = document.getElementById('results-modal');
@@ -613,7 +557,7 @@
             }
         }
 
-        // Capture and crop MRZ area
+        // Capture - WYSIWYG: What You See Is What You Get
         function captureAndCropMRZ() {
             if (isScanning) return;
             isScanning = true;
@@ -624,51 +568,58 @@
             }
 
             // Start scanning animation
-            mrzCutout.parentElement.classList.add('scanning');
+            scannerStrip.classList.add('scanning');
 
-            // Create temporary canvas with full video frame
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = videoFeed.videoWidth;
-            tempCanvas.height = videoFeed.videoHeight;
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.drawImage(videoFeed, 0, 0);
+            // Get the scanner strip dimensions
+            const stripRect = scannerStrip.getBoundingClientRect();
+            const stripWidth = stripRect.width;
+            const stripHeight = stripRect.height;
 
-            // Calculate MRZ cutout coordinates in video space
-            const cutoutRect = calculateCutoutRect();
-
-            // Crop to MRZ area only
-            cropCanvas.width = cutoutRect.width;
-            cropCanvas.height = cutoutRect.height;
-            const cropCtx = cropCanvas.getContext('2d');
-
-            cropCtx.drawImage(
-                tempCanvas,
-                cutoutRect.x, cutoutRect.y, cutoutRect.width, cutoutRect.height,
-                0, 0, cutoutRect.width, cutoutRect.height
-            );
-
-            // Convert cropped canvas to blob
-            cropCanvas.toBlob(async (blob) => {
-                await sendToBackend(blob);
-            }, 'image/jpeg', 0.95);
-        }
-
-        // Calculate MRZ cutout rectangle in video coordinates
-        function calculateCutoutRect() {
+            // Get video dimensions
             const videoWidth = videoFeed.videoWidth;
             const videoHeight = videoFeed.videoHeight;
 
-            // MRZ cutout dimensions (matching CSS)
-            const cutoutWidthPercent = 0.90;
-            const cutoutHeightPercent = 0.15;
-            const cutoutBottomPercent = 0.20;
+            // Calculate the crop area to match what's visible in the scanner strip
+            // Since object-fit: cover is used, we need to calculate the visible portion
+            const videoAspect = videoWidth / videoHeight;
+            const stripAspect = stripWidth / stripHeight;
 
-            const width = Math.floor(videoWidth * cutoutWidthPercent);
-            const height = Math.floor(videoHeight * cutoutHeightPercent);
-            const x = Math.floor((videoWidth - width) / 2);
-            const y = Math.floor(videoHeight * (1 - cutoutBottomPercent - cutoutHeightPercent));
+            let sourceX, sourceY, sourceWidth, sourceHeight;
 
-            return { x, y, width, height };
+            if (videoAspect > stripAspect) {
+                // Video is wider - crop sides
+                sourceHeight = videoHeight;
+                sourceWidth = videoHeight * stripAspect;
+                sourceX = (videoWidth - sourceWidth) / 2;
+                sourceY = 0;
+            } else {
+                // Video is taller - crop top/bottom
+                sourceWidth = videoWidth;
+                sourceHeight = videoWidth / stripAspect;
+                sourceX = 0;
+                sourceY = (videoHeight - sourceHeight) / 2;
+            }
+
+            // Set canvas to match the scanner strip aspect ratio
+            // Use high resolution for better OCR
+            const targetWidth = 1200; // Good resolution for OCR
+            const targetHeight = Math.round(targetWidth / stripAspect);
+
+            cropCanvas.width = targetWidth;
+            cropCanvas.height = targetHeight;
+            const ctx = cropCanvas.getContext('2d');
+
+            // Draw the visible portion
+            ctx.drawImage(
+                videoFeed,
+                sourceX, sourceY, sourceWidth, sourceHeight,
+                0, 0, targetWidth, targetHeight
+            );
+
+            // Convert to blob and send
+            cropCanvas.toBlob(async (blob) => {
+                await sendToBackend(blob);
+            }, 'image/jpeg', 0.95);
         }
 
         // Send cropped image to backend
@@ -696,7 +647,7 @@
                 console.error('Scan error:', error);
                 showError(error.message || 'Failed to scan passport');
                 isScanning = false;
-                mrzCutout.parentElement.classList.remove('scanning');
+                scannerStrip.classList.remove('scanning');
             } finally {
                 loading.classList.remove('show');
             }
@@ -749,7 +700,7 @@
 
             // Show results modal
             resultsModal.classList.add('show');
-            mrzCutout.parentElement.classList.remove('scanning');
+            scannerStrip.classList.remove('scanning');
             isScanning = false;
 
             // Send data to Telegram
@@ -771,7 +722,7 @@
         function rescan() {
             resultsModal.classList.remove('show');
             isScanning = false;
-            mrzCutout.parentElement.classList.remove('scanning');
+            scannerStrip.classList.remove('scanning');
         }
 
         // Event listeners
