@@ -761,12 +761,18 @@
             formData.append('file', blob, 'mrz.jpg');
 
             try {
+                console.log('Sending image to backend:', blob.size, 'bytes');
+
                 const response = await fetch('/scan', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    headers: {
+                        'Cache-Control': 'no-cache, no-store, must-revalidate'
+                    }
                 });
 
                 const result = await response.json();
+                console.log('Received result:', result);
 
                 if (!response.ok) {
                     throw new Error(result.detail || 'Scan failed');

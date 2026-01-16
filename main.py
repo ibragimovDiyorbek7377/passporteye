@@ -58,7 +58,10 @@ class MistralVisionScanner:
         Scan MRZ strip image using Mistral Vision API with Grid Method
         Returns raw Line 1 and Line 2 strings
         """
-        print(f"🔍 Scanning MRZ strip ({len(image_bytes)} bytes)...", flush=True)
+        # Calculate image hash for debugging
+        import hashlib
+        image_hash = hashlib.md5(image_bytes).hexdigest()[:8]
+        print(f"🔍 Scanning MRZ strip ({len(image_bytes)} bytes, hash: {image_hash})...", flush=True)
 
         try:
             # Convert to base64
@@ -72,8 +75,8 @@ INPUT: A cropped image containing ONLY 2 lines of MRZ text (Machine Readable Zon
 INSTRUCTION: Transcribe characters visually in a strict grid format. Read each character position carefully.
 
 MRZ FORMAT (TD3 Passport - 44 characters per line):
-LINE 1: P<UZBBEKTURDIYEVA<<KAMOLA<<<<<<<<<<<<<<<<<<
-LINE 2: FA12345679UZB0001015F3112250<<<<<<<<<<<<<<08
+LINE 1: Type + Country + Surname + << + Given Names + <<< (filler to 44 chars)
+LINE 2: Passport# + Check + Country + BirthDate + Check + Sex + ExpiryDate + Check + PINFL + Check + Composite
 
 LINE 2 DECODING RULES (Fixed Character Indices):
 - Position 0-8: Passport Number (9 chars) - First 2 MUST be LETTERS, rest DIGITS
@@ -104,10 +107,9 @@ You MUST respond with ONLY the JSON object below. Do NOT add:
 - Newlines or formatting around the JSON
 
 Return EXACTLY this structure and nothing else:
-{"line1": "44-character line 1", "line2": "44-character line 2"}
+{"line1": "44-character line 1 from the image", "line2": "44-character line 2 from the image"}
 
-Example of correct response:
-{"line1": "P<UZBBEKTURDIYEVA<<KAMOLA<<<<<<<<<<<<<<<<<<", "line2": "FA12345679UZB0001015F3112250<<<<<<<<<<<<<<08"}"""
+IMPORTANT: Read the ACTUAL characters from the uploaded image. Do NOT use placeholder or example data. Transcribe what you SEE in the image."""
 
             # Call Mistral Vision API
             messages = [
