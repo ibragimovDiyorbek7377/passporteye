@@ -19,96 +19,55 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', sans-serif;
-            background: var(--ultra-dark);
+            background: #000;
             color: #ffffff;
             overflow: hidden;
             height: 100vh;
-            display: flex;
-            flex-direction: column;
             -webkit-font-smoothing: antialiased;
             letter-spacing: 0.3px;
         }
 
-        /* Header Strip */
-        .header {
-            padding: 20px 16px;
-            text-align: center;
-            background: var(--ultra-dark);
-            border-bottom: 1px solid var(--customs-green);
-        }
-
-        .header h1 {
-            font-size: 13px;
-            font-weight: 700;
-            color: #ffffff;
-            letter-spacing: 1.2px;
-            text-transform: uppercase;
-        }
-
-        /* Main Content Area - Solid Black Background */
-        .main-content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background: var(--ultra-dark);
-            padding: 20px;
-            gap: 12px;
-        }
-
-        /* Label above scanner */
-        .scanner-label {
-            color: #ffffff;
-            font-size: 13px;
-            font-weight: 600;
-            text-align: center;
-            margin-bottom: 8px;
-            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
-        }
-
-        /* THE SCANNER STRIP - The ONLY place where camera is visible */
-        .scanner-strip {
-            width: 90%;
-            max-width: 600px;
-            height: 140px;
-            position: relative;
-            overflow: hidden; /* CRITICAL: This hides everything outside */
-            border: 3px solid var(--customs-green);
-            border-radius: 12px;
-            box-shadow:
-                0 0 30px rgba(8, 144, 0, 0.4),
-                inset 0 0 30px rgba(8, 144, 0, 0.1);
-            animation: pulse-glow 2s ease-in-out infinite;
-            background: #000; /* Fallback before camera loads */
-        }
-
-        @keyframes pulse-glow {
-            0%, 100% {
-                box-shadow:
-                    0 0 30px rgba(8, 144, 0, 0.4),
-                    inset 0 0 30px rgba(8, 144, 0, 0.1);
-            }
-            50% {
-                box-shadow:
-                    0 0 40px rgba(8, 144, 0, 0.6),
-                    inset 0 0 40px rgba(8, 144, 0, 0.2);
-            }
-        }
-
-        /* Video element - INSIDE the scanner strip */
+        /* ===== LAYER 1: FULL-SCREEN CAMERA (Background) ===== */
         #video-feed {
+            position: fixed;
+            top: 0;
+            left: 0;
             width: 100%;
             height: 100%;
-            object-fit: cover; /* Zoom to fill the strip */
-            display: block;
+            object-fit: cover;
+            z-index: 0;
         }
 
-        /* Corner markers for scanner strip */
+        /* ===== LAYER 2: DARK OVERLAY MASK WITH TRANSPARENT CUTOUT ===== */
+        .overlay-mask {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+
+        .scanner-cutout {
+            width: 85%;
+            max-width: 500px;
+            height: 160px;
+            border-radius: 12px;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            /* THE MAGIC: Massive box-shadow creates the dark overlay around the cutout */
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+            position: relative;
+        }
+
+        /* Corner markers for the cutout */
         .corner {
             position: absolute;
-            width: 25px;
-            height: 25px;
+            width: 30px;
+            height: 30px;
             border: 3px solid var(--customs-green);
         }
 
@@ -147,12 +106,12 @@
             width: 100%;
             height: 2px;
             background: var(--customs-green);
-            box-shadow: 0 0 15px var(--customs-green);
+            box-shadow: 0 0 20px var(--customs-green);
             animation: scan-move 1.5s ease-in-out infinite;
-            z-index: 10;
+            z-index: 1;
         }
 
-        .scanner-strip.scanning .scan-line {
+        .scanner-cutout.scanning .scan-line {
             display: block;
         }
 
@@ -167,68 +126,134 @@
             }
         }
 
-        /* Intense scanning pulse */
-        .scanner-strip.scanning {
+        /* Scanning pulse effect on border */
+        .scanner-cutout.scanning {
+            border-color: var(--customs-green);
+            box-shadow:
+                0 0 0 9999px rgba(0, 0, 0, 0.6),
+                0 0 40px rgba(8, 144, 0, 0.6),
+                inset 0 0 40px rgba(8, 144, 0, 0.3);
             animation: scan-pulse 1s ease-in-out infinite;
         }
 
         @keyframes scan-pulse {
             0%, 100% {
                 border-color: var(--customs-green);
-                box-shadow:
-                    0 0 30px rgba(8, 144, 0, 0.4),
-                    inset 0 0 30px rgba(8, 144, 0, 0.1);
             }
             50% {
                 border-color: #0aff00;
-                box-shadow:
-                    0 0 50px rgba(10, 255, 0, 0.8),
-                    inset 0 0 50px rgba(10, 255, 0, 0.3);
             }
         }
 
-        /* Controls at bottom */
-        .controls {
-            padding: 30px 20px;
-            background: var(--ultra-dark);
+        /* Label above scanner */
+        .scanner-label {
+            position: absolute;
+            top: -40px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+            white-space: nowrap;
+        }
+
+        /* ===== LAYER 3: UI ELEMENTS (Top & Bottom) ===== */
+        /* iOS-style Header Bar */
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 60px;
+            background: var(--customs-green);
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            pointer-events: auto;
+        }
+
+        .header-btn {
+            background: none;
+            border: none;
+            color: #ffffff;
+            font-size: 17px;
+            font-weight: 400;
+            cursor: pointer;
+            padding: 8px 12px;
+            transition: opacity 0.2s ease;
+        }
+
+        .header-btn:active {
+            opacity: 0.6;
+        }
+
+        .header-title {
+            font-size: 17px;
+            font-weight: 600;
+            color: #ffffff;
+            letter-spacing: 0.3px;
+        }
+
+        .flash-btn {
+            background: none;
+            border: none;
+            color: #ffffff;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 8px;
+            transition: opacity 0.2s ease;
+        }
+
+        .flash-btn:active {
+            opacity: 0.6;
+        }
+
+        /* Bottom Controls */
+        .bottom-controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            z-index: 20;
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 16px;
+            padding: 30px 20px 40px;
+            background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, transparent 100%);
+            pointer-events: auto;
         }
 
         /* Shutter button */
         .shutter-btn {
-            width: 80px;
-            height: 80px;
+            width: 70px;
+            height: 70px;
             border-radius: 50%;
-            background: var(--ultra-dark);
+            background: #ffffff;
             border: 4px solid var(--customs-green);
-            box-shadow:
-                0 0 30px rgba(8, 144, 0, 0.5),
-                inset 0 0 20px rgba(8, 144, 0, 0.2);
+            box-shadow: 0 4px 20px rgba(8, 144, 0, 0.6);
             cursor: pointer;
             transition: all 0.2s ease;
             position: relative;
         }
 
-        .shutter-btn::before {
-            content: 'SCAN';
+        .shutter-btn::after {
+            content: '';
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 13px;
-            font-weight: 700;
-            color: var(--customs-green);
-            letter-spacing: 1px;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: var(--customs-green);
         }
 
         .shutter-btn:active {
             transform: scale(0.95);
-            box-shadow:
-                0 0 40px rgba(8, 144, 0, 0.8),
-                inset 0 0 30px rgba(8, 144, 0, 0.4);
         }
 
         .shutter-btn:disabled {
@@ -236,13 +261,79 @@
             cursor: not-allowed;
         }
 
-        /* Footer */
-        .footer {
-            text-align: center;
-            color: #6b7280;
-            font-size: 10px;
-            padding-bottom: 12px;
+        /* Footer text */
+        .footer-text {
+            margin-top: 16px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 11px;
             font-weight: 500;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+        }
+
+        /* ===== CHECKMARK SUCCESS ANIMATION ===== */
+        .checkmark-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .checkmark-overlay.show {
+            display: flex;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .checkmark-circle {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: var(--customs-green);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 60px rgba(8, 144, 0, 0.8);
+            animation: scaleIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        @keyframes scaleIn {
+            from {
+                transform: scale(0);
+                opacity: 0;
+            }
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        .checkmark-icon {
+            width: 60px;
+            height: 60px;
+            stroke: #ffffff;
+            stroke-width: 4;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            fill: none;
+            stroke-dasharray: 100;
+            stroke-dashoffset: 100;
+            animation: drawCheck 0.6s ease-out 0.3s forwards;
+        }
+
+        @keyframes drawCheck {
+            to {
+                stroke-dashoffset: 0;
+            }
         }
 
         /* Results modal */
@@ -455,19 +546,13 @@
     </style>
 </head>
 <body>
-    <!-- Header -->
-    <div class="header">
-        <h1>CUSTOMS COMMITTEE OF UZBEKISTAN</h1>
-    </div>
+    <!-- ===== LAYER 1: FULL-SCREEN CAMERA (z-index: 0) ===== -->
+    <video id="video-feed" autoplay playsinline></video>
 
-    <!-- Main Content - Solid Black Background -->
-    <div class="main-content">
-        <!-- Label -->
-        <div class="scanner-label">MRZ kodni shu yerga to'g'rilang</div>
-
-        <!-- THE SCANNER STRIP - Camera is ONLY visible here -->
-        <div class="scanner-strip" id="scanner-strip">
-            <video id="video-feed" autoplay playsinline></video>
+    <!-- ===== LAYER 2: DARK OVERLAY MASK (z-index: 10) ===== -->
+    <div class="overlay-mask">
+        <div class="scanner-cutout" id="scanner-cutout">
+            <div class="scanner-label">Position MRZ code within this frame</div>
             <div class="corner tl"></div>
             <div class="corner tr"></div>
             <div class="corner bl"></div>
@@ -476,14 +561,27 @@
         </div>
     </div>
 
-    <!-- Controls -->
-    <div class="controls">
-        <button class="shutter-btn" id="shutter-btn"></button>
+    <!-- ===== LAYER 3: UI ELEMENTS (z-index: 20+) ===== -->
+    <!-- iOS-style Header -->
+    <div class="header">
+        <button class="header-btn" id="cancel-btn">Cancel</button>
+        <div class="header-title">MRZ Scanner</div>
+        <button class="flash-btn" id="flash-btn">⚡</button>
     </div>
 
-    <!-- Footer -->
-    <div class="footer">
-        Targeting and risk department
+    <!-- Bottom Controls -->
+    <div class="bottom-controls">
+        <button class="shutter-btn" id="shutter-btn"></button>
+        <div class="footer-text">Customs Committee of Uzbekistan</div>
+    </div>
+
+    <!-- Checkmark Success Overlay -->
+    <div class="checkmark-overlay" id="checkmark-overlay">
+        <div class="checkmark-circle">
+            <svg class="checkmark-icon" viewBox="0 0 52 52">
+                <polyline points="14,26 22,34 38,18" />
+            </svg>
+        </div>
     </div>
 
     <!-- Hidden canvas for cropping -->
@@ -525,7 +623,10 @@
         // DOM elements
         const videoFeed = document.getElementById('video-feed');
         const shutterBtn = document.getElementById('shutter-btn');
-        const scannerStrip = document.getElementById('scanner-strip');
+        const scannerCutout = document.getElementById('scanner-cutout');
+        const cancelBtn = document.getElementById('cancel-btn');
+        const flashBtn = document.getElementById('flash-btn');
+        const checkmarkOverlay = document.getElementById('checkmark-overlay');
         const loading = document.getElementById('loading');
         const errorToast = document.getElementById('error-toast');
         const resultsModal = document.getElementById('results-modal');
@@ -534,6 +635,7 @@
 
         let stream = null;
         let isScanning = false;
+        let flashEnabled = false;
 
         // Initialize camera
         async function initCamera() {
@@ -557,7 +659,26 @@
             }
         }
 
-        // Capture - WYSIWYG: What You See Is What You Get
+        // Toggle flash
+        function toggleFlash() {
+            if (!stream) return;
+
+            const track = stream.getVideoTracks()[0];
+            const capabilities = track.getCapabilities();
+
+            if (capabilities.torch) {
+                flashEnabled = !flashEnabled;
+                track.applyConstraints({
+                    advanced: [{ torch: flashEnabled }]
+                }).then(() => {
+                    flashBtn.style.opacity = flashEnabled ? '1' : '0.6';
+                }).catch(err => {
+                    console.error('Flash toggle failed:', err);
+                });
+            }
+        }
+
+        // Capture - WYSIWYG: Crop the area visible in the scanner cutout
         function captureAndCropMRZ() {
             if (isScanning) return;
             isScanning = true;
@@ -568,48 +689,37 @@
             }
 
             // Start scanning animation
-            scannerStrip.classList.add('scanning');
+            scannerCutout.classList.add('scanning');
 
-            // Get the scanner strip dimensions
-            const stripRect = scannerStrip.getBoundingClientRect();
-            const stripWidth = stripRect.width;
-            const stripHeight = stripRect.height;
+            // Get the scanner cutout dimensions and position
+            const cutoutRect = scannerCutout.getBoundingClientRect();
+            const videoRect = videoFeed.getBoundingClientRect();
 
-            // Get video dimensions
+            // Calculate relative position of cutout within video viewport
+            const relativeX = (cutoutRect.left - videoRect.left) / videoRect.width;
+            const relativeY = (cutoutRect.top - videoRect.top) / videoRect.height;
+            const relativeWidth = cutoutRect.width / videoRect.width;
+            const relativeHeight = cutoutRect.height / videoRect.height;
+
+            // Get actual video dimensions
             const videoWidth = videoFeed.videoWidth;
             const videoHeight = videoFeed.videoHeight;
 
-            // Calculate the crop area to match what's visible in the scanner strip
-            // Since object-fit: cover is used, we need to calculate the visible portion
-            const videoAspect = videoWidth / videoHeight;
-            const stripAspect = stripWidth / stripHeight;
+            // Calculate the crop area from the actual video
+            const sourceX = Math.max(0, relativeX * videoWidth);
+            const sourceY = Math.max(0, relativeY * videoHeight);
+            const sourceWidth = Math.min(videoWidth, relativeWidth * videoWidth);
+            const sourceHeight = Math.min(videoHeight, relativeHeight * videoHeight);
 
-            let sourceX, sourceY, sourceWidth, sourceHeight;
-
-            if (videoAspect > stripAspect) {
-                // Video is wider - crop sides
-                sourceHeight = videoHeight;
-                sourceWidth = videoHeight * stripAspect;
-                sourceX = (videoWidth - sourceWidth) / 2;
-                sourceY = 0;
-            } else {
-                // Video is taller - crop top/bottom
-                sourceWidth = videoWidth;
-                sourceHeight = videoWidth / stripAspect;
-                sourceX = 0;
-                sourceY = (videoHeight - sourceHeight) / 2;
-            }
-
-            // Set canvas to match the scanner strip aspect ratio
-            // Use high resolution for better OCR
-            const targetWidth = 1200; // Good resolution for OCR
-            const targetHeight = Math.round(targetWidth / stripAspect);
+            // Set canvas to high resolution for better OCR
+            const targetWidth = 1200;
+            const targetHeight = Math.round(targetWidth * (cutoutRect.height / cutoutRect.width));
 
             cropCanvas.width = targetWidth;
             cropCanvas.height = targetHeight;
             const ctx = cropCanvas.getContext('2d');
 
-            // Draw the visible portion
+            // Draw the cropped portion
             ctx.drawImage(
                 videoFeed,
                 sourceX, sourceY, sourceWidth, sourceHeight,
@@ -647,7 +757,7 @@
                 console.error('Scan error:', error);
                 showError(error.message || 'Failed to scan passport');
                 isScanning = false;
-                scannerStrip.classList.remove('scanning');
+                scannerCutout.classList.remove('scanning');
             } finally {
                 loading.classList.remove('show');
             }
@@ -655,58 +765,73 @@
 
         // Display results
         function displayResults(data) {
-            // Validation badge
-            const badge = document.getElementById('validation-badge');
-            const status = data.validation_status || 'FAIL';
-            badge.textContent = status;
-            badge.className = `validation-badge ${status.toLowerCase()}`;
+            // Stop scanning animation
+            scannerCutout.classList.remove('scanning');
 
-            // Data grid
-            const dataGrid = document.getElementById('data-grid');
-            dataGrid.innerHTML = `
-                <div class="data-item">
-                    <div class="data-label">Passport Number</div>
-                    <div class="data-value highlight">${data.passport_number || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">Surname</div>
-                    <div class="data-value">${data.surname || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">Given Names</div>
-                    <div class="data-value">${data.name || data.given_names || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">PINFL</div>
-                    <div class="data-value highlight">${data.pinfl || data.personal_number || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">Date of Birth</div>
-                    <div class="data-value">${data.birth_date || data.date_of_birth || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">Sex</div>
-                    <div class="data-value">${data.sex || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">Expiry Date</div>
-                    <div class="data-value">${data.expiry_date || data.date_of_expiry || 'N/A'}</div>
-                </div>
-                <div class="data-item">
-                    <div class="data-label">Nationality</div>
-                    <div class="data-value">${data.nationality || 'N/A'}</div>
-                </div>
-            `;
+            // Show checkmark animation
+            checkmarkOverlay.classList.add('show');
 
-            // Show results modal
-            resultsModal.classList.add('show');
-            scannerStrip.classList.remove('scanning');
-            isScanning = false;
-
-            // Send data to Telegram
-            if (tg?.sendData) {
-                tg.sendData(JSON.stringify(data));
+            // Haptic feedback for success
+            if (tg?.HapticFeedback) {
+                tg.HapticFeedback.notificationOccurred('success');
             }
+
+            // After checkmark animation, show results modal
+            setTimeout(() => {
+                checkmarkOverlay.classList.remove('show');
+
+                // Validation badge
+                const badge = document.getElementById('validation-badge');
+                const status = data.validation_status || 'FAIL';
+                badge.textContent = status;
+                badge.className = `validation-badge ${status.toLowerCase()}`;
+
+                // Data grid
+                const dataGrid = document.getElementById('data-grid');
+                dataGrid.innerHTML = `
+                    <div class="data-item">
+                        <div class="data-label">Passport Number</div>
+                        <div class="data-value highlight">${data.passport_number || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">Surname</div>
+                        <div class="data-value">${data.surname || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">Given Names</div>
+                        <div class="data-value">${data.name || data.given_names || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">PINFL</div>
+                        <div class="data-value highlight">${data.pinfl || data.personal_number || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">Date of Birth</div>
+                        <div class="data-value">${data.birth_date || data.date_of_birth || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">Sex</div>
+                        <div class="data-value">${data.sex || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">Expiry Date</div>
+                        <div class="data-value">${data.expiry_date || data.date_of_expiry || 'N/A'}</div>
+                    </div>
+                    <div class="data-item">
+                        <div class="data-label">Nationality</div>
+                        <div class="data-value">${data.nationality || 'N/A'}</div>
+                    </div>
+                `;
+
+                // Show results modal
+                resultsModal.classList.add('show');
+                isScanning = false;
+
+                // Send data to Telegram
+                if (tg?.sendData) {
+                    tg.sendData(JSON.stringify(data));
+                }
+            }, 1500); // Show checkmark for 1.5 seconds
         }
 
         // Show error
@@ -721,13 +846,27 @@
         // Rescan
         function rescan() {
             resultsModal.classList.remove('show');
+            checkmarkOverlay.classList.remove('show');
             isScanning = false;
-            scannerStrip.classList.remove('scanning');
+            scannerCutout.classList.remove('scanning');
+        }
+
+        // Cancel button - go back or close
+        function handleCancel() {
+            if (resultsModal.classList.contains('show')) {
+                rescan();
+            } else if (tg?.close) {
+                tg.close();
+            } else {
+                window.history.back();
+            }
         }
 
         // Event listeners
         shutterBtn.addEventListener('click', captureAndCropMRZ);
         btnRescan.addEventListener('click', rescan);
+        cancelBtn.addEventListener('click', handleCancel);
+        flashBtn.addEventListener('click', toggleFlash);
 
         // Initialize
         window.addEventListener('load', initCamera);
