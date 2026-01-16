@@ -239,6 +239,16 @@ class MistralMRZScanner:
             # Clean the line
             line = line.strip()
 
+            # Check for concatenated MRZ (88+ characters)
+            if len(line) >= 88 and (line.startswith('P<') or 'P<' in line[:5]):
+                # Split into two 44-character lines
+                line1 = line[:44]
+                line2 = line[44:88]
+                mrz_lines.append(line1)
+                mrz_lines.append(line2)
+                print(f"🔀 Split concatenated MRZ: {len(line)} chars → 2 lines", flush=True)
+                continue
+
             # MRZ lines are exactly 44 characters and contain multiple '<' characters
             if len(line) == 44:
                 # Check if line contains typical MRZ patterns
@@ -246,12 +256,23 @@ class MistralMRZScanner:
                     mrz_lines.append(line)
             # Also check for lines that start with P< (first MRZ line)
             elif line.startswith('P<') and len(line) >= 40:
-                # Pad or trim to exactly 44 characters
-                if len(line) < 44:
-                    line = line.ljust(44, '<')
-                elif len(line) > 44:
-                    line = line[:44]
-                mrz_lines.append(line)
+                # Check if this is concatenated (line 1 + line 2 together)
+                if len(line) >= 80:
+                    # Definitely concatenated, split it
+                    line1 = self._normalize_mrz_line(line[:44])
+                    line2 = self._normalize_mrz_line(line[44:88])
+                    mrz_lines.append(line1)
+                    mrz_lines.append(line2)
+                    print(f"🔀 Split long line: {len(line)} chars → 2 lines", flush=True)
+                else:
+                    # Pad or trim to exactly 44 characters
+                    if len(line) < 44:
+                        line = line.ljust(44, '<')
+                    elif len(line) > 44 and len(line) < 88:
+                        # This might be concatenated but shorter
+                        # Try to extract 2 lines if we have at least 80 chars
+                        line = line[:44]
+                    mrz_lines.append(line)
 
         print(f"🔍 Found {len(mrz_lines)} potential MRZ lines", flush=True)
         for i, line in enumerate(mrz_lines):
@@ -396,29 +417,48 @@ Return this exact JSON format (no markdown):
             if line.startswith('P<') or (len(line) >= 40 and '<' in line):
                 mrz_candidates.append(line)
 
+        # Try concatenated format first (most common issue)
+        for line in mrz_candidates:
+            if len(line) >= 80:  # Two lines concatenated (at least 80 chars)
+                line1 = self._normalize_mrz_line(line[:44])
+                line2 = self._normalize_mrz_line(line[44:88])
+
+                print(f"✅ Manual extraction (concatenated {len(line)} chars) succeeded", flush=True)
+                print(f"   Line1 ({len(line1)}): {line1}", flush=True)
+                print(f"   Line2 ({len(line2)}): {line2}", flush=True)
+
+                return {"line1": line1, "line2": line2}
+
+        # Try separate lines
         if len(mrz_candidates) >= 2:
             line1 = self._normalize_mrz_line(mrz_candidates[0])
             line2 = self._normalize_mrz_line(mrz_candidates[1])
 
-            print(f"✅ Manual extraction succeeded", flush=True)
+            print(f"✅ Manual extraction (separate lines) succeeded", flush=True)
             print(f"   Line1 ({len(line1)}): {line1}", flush=True)
             print(f"   Line2 ({len(line2)}): {line2}", flush=True)
 
             return {"line1": line1, "line2": line2}
 
-        # Try concatenated format
-        for line in mrz_candidates:
-            if len(line) >= 88:  # Two lines concatenated
+        # If we have only 1 candidate, check if it's at least close to concatenated
+        if len(mrz_candidates) == 1:
+            line = mrz_candidates[0]
+            if len(line) >= 70:  # Might be concatenated but with some chars missing
                 line1 = self._normalize_mrz_line(line[:44])
-                line2 = self._normalize_mrz_line(line[44:88])
+                # Try to extract second line from remaining text
+                remaining = line[44:]
+                line2 = self._normalize_mrz_line(remaining)
 
-                print(f"✅ Manual extraction (concatenated) succeeded", flush=True)
+                print(f"✅ Manual extraction (partial concatenated {len(line)} chars) succeeded", flush=True)
                 print(f"   Line1 ({len(line1)}): {line1}", flush=True)
                 print(f"   Line2 ({len(line2)}): {line2}", flush=True)
 
                 return {"line1": line1, "line2": line2}
 
         print(f"⚠️  Manual extraction found {len(mrz_candidates)} candidates, need 2", flush=True)
+        if mrz_candidates:
+            for i, cand in enumerate(mrz_candidates):
+                print(f"   Candidate {i+1}: {len(cand)} chars - {cand[:50]}...", flush=True)
         return None
 
     def _normalize_mrz_line(self, line: str) -> str:
@@ -430,6 +470,9 @@ Return this exact JSON format (no markdown):
 
         # Remove any whitespace
         line = line.strip()
+
+        # Convert to uppercase (MRZ standard)
+        line = line.upper()
 
         # Truncate or pad to exactly 44 characters
         if len(line) > 44:
