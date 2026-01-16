@@ -236,6 +236,35 @@ class MistralMRZScanner:
             print(f"❌ Error extracting OCR text: {str(e)}", flush=True)
             return html.unescape(str(ocr_response))
 
+    def _smart_split_mrz(self, text: str) -> tuple:
+        """
+        Intelligently split concatenated MRZ by finding passport number pattern
+        Uzbek passports: 2 letters + 7 digits (e.g., FA1234567, FB0292047)
+        """
+        import re
+
+        # Pattern: 2 uppercase letters followed by 7 digits
+        # This is where Line 2 starts (passport number)
+        passport_pattern = re.compile(r'[A-Z]{2}\d{7}', re.IGNORECASE)
+
+        match = passport_pattern.search(text)
+        if match:
+            split_pos = match.start()
+            print(f"🎯 Found passport number at position {split_pos}: {match.group()}", flush=True)
+
+            line1 = text[:split_pos]
+            line2 = text[split_pos:]
+
+            # Normalize both lines to exactly 44 chars
+            line1 = self._normalize_mrz_line(line1)
+            line2 = self._normalize_mrz_line(line2[:44])  # Take only first 44 chars of line2
+
+            return (line1, line2)
+
+        # Fallback: blind split at 44
+        print(f"⚠️  Passport pattern not found, using position 44", flush=True)
+        return (text[:44], text[44:88] if len(text) >= 88 else text[44:])
+
     def _extract_mrz_lines(self, text: str) -> list:
         """Extract MRZ lines from text"""
         # MRZ lines for TD3 (passport) format:
@@ -250,14 +279,13 @@ class MistralMRZScanner:
             # Clean the line
             line = line.strip()
 
-            # Check for concatenated MRZ (88+ characters)
-            if len(line) >= 88 and (line.startswith('P<') or 'P<' in line[:5]):
-                # Split into two 44-character lines
-                line1 = line[:44]
-                line2 = line[44:88]
+            # Check for concatenated MRZ (80+ characters)
+            if len(line) >= 80 and (line.upper().startswith('P<') or 'P<' in line[:5].upper()):
+                # Use smart split to find passport number
+                line1, line2 = self._smart_split_mrz(line)
                 mrz_lines.append(line1)
                 mrz_lines.append(line2)
-                print(f"🔀 Split concatenated MRZ: {len(line)} chars → 2 lines", flush=True)
+                print(f"🔀 Smart split MRZ: {len(line)} chars → 2 lines", flush=True)
                 continue
 
             # MRZ lines are exactly 44 characters and contain multiple '<' characters
@@ -266,24 +294,13 @@ class MistralMRZScanner:
                 if line.count('<') >= 3:  # MRZ lines have many '<' characters
                     mrz_lines.append(line)
             # Also check for lines that start with P< (first MRZ line)
-            elif line.startswith('P<') and len(line) >= 40:
-                # Check if this is concatenated (line 1 + line 2 together)
-                if len(line) >= 80:
-                    # Definitely concatenated, split it
-                    line1 = self._normalize_mrz_line(line[:44])
-                    line2 = self._normalize_mrz_line(line[44:88])
-                    mrz_lines.append(line1)
-                    mrz_lines.append(line2)
-                    print(f"🔀 Split long line: {len(line)} chars → 2 lines", flush=True)
+            elif line.upper().startswith('P<') and len(line) >= 40:
+                # Pad or trim to exactly 44 characters
+                if len(line) < 44:
+                    line = line.ljust(44, '<')
                 else:
-                    # Pad or trim to exactly 44 characters
-                    if len(line) < 44:
-                        line = line.ljust(44, '<')
-                    elif len(line) > 44 and len(line) < 88:
-                        # This might be concatenated but shorter
-                        # Try to extract 2 lines if we have at least 80 chars
-                        line = line[:44]
-                    mrz_lines.append(line)
+                    line = line[:44]
+                mrz_lines.append(line)
 
         print(f"🔍 Found {len(mrz_lines)} potential MRZ lines", flush=True)
         for i, line in enumerate(mrz_lines):
@@ -442,8 +459,8 @@ Return this exact JSON format (no markdown):
         # Try concatenated format first (most common issue)
         for line in mrz_candidates:
             if len(line) >= 80:  # Two lines concatenated (at least 80 chars)
-                line1 = self._normalize_mrz_line(line[:44])
-                line2 = self._normalize_mrz_line(line[44:88])
+                # Use smart split to find passport number pattern
+                line1, line2 = self._smart_split_mrz(line)
 
                 print(f"✅ Manual extraction (concatenated {len(line)} chars) succeeded", flush=True)
                 print(f"   Line1 ({len(line1)}): {line1}", flush=True)
@@ -466,10 +483,8 @@ Return this exact JSON format (no markdown):
         if len(mrz_candidates) == 1:
             line = mrz_candidates[0]
             if len(line) >= 70:  # Might be concatenated but with some chars missing
-                line1 = self._normalize_mrz_line(line[:44])
-                # Try to extract second line from remaining text
-                remaining = line[44:]
-                line2 = self._normalize_mrz_line(remaining)
+                # Use smart split for partial concatenation too
+                line1, line2 = self._smart_split_mrz(line)
 
                 print(f"✅ Manual extraction (partial concatenated {len(line)} chars) succeeded", flush=True)
                 print(f"   Line1 ({len(line1)}): {line1}", flush=True)
@@ -660,8 +675,24 @@ class MRZParser:
         composite_check = line2[43]
 
         # Apply OCR corrections
-        passport_number = MRZParser.ocr_error_correction_numbers(passport_number_raw).replace('<', '').strip()
-        nationality = nationality.replace('<', '').strip()
+        # For passport number: first 2 chars should be LETTERS, rest should be DIGITS
+        passport_cleaned = passport_number_raw.replace('<', '').strip()
+        if len(passport_cleaned) >= 2:
+            # Ensure first 2 characters are letters (fix O->0 errors)
+            prefix = passport_cleaned[:2].replace('0', 'O').replace('1', 'I')
+            # Ensure remaining characters are digits (fix O->0 errors)
+            suffix = passport_cleaned[2:].replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
+            passport_number = prefix + suffix
+        else:
+            passport_number = MRZParser.ocr_error_correction_numbers(passport_cleaned)
+
+        # Fix common nationality OCR errors (especially for UZB)
+        nationality_raw = nationality.replace('<', '').strip()
+        if nationality_raw in ['ZBO', 'LZB', 'USB', 'U2B', 'UZ8', 'UZD', '028', 'O2B']:
+            nationality = 'UZB'
+        else:
+            nationality = nationality_raw
+
         dob = MRZParser.ocr_error_correction_numbers(dob_raw)
         expiry = MRZParser.ocr_error_correction_numbers(expiry_raw)
         personal_number = MRZParser.ocr_error_correction_numbers(personal_number_raw).replace('<', '').strip()
