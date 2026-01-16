@@ -170,6 +170,8 @@ class MistralMRZScanner:
 
     def _extract_ocr_text(self, ocr_response) -> str:
         """Extract text from Mistral OCR API response"""
+        import html
+
         try:
             # Mistral OCR API returns a response with .pages attribute
             # Each page has a .markdown attribute with the extracted text
@@ -182,6 +184,10 @@ class MistralMRZScanner:
 
                 # Join all text
                 full_text = '\n'.join(all_text)
+
+                # Decode HTML entities (e.g., &lt; -> <, &gt; -> >)
+                full_text = html.unescape(full_text)
+
                 print(f"📝 Extracted markdown text: {full_text[:200]}", flush=True)
 
                 # Find MRZ lines in the text
@@ -193,17 +199,18 @@ class MistralMRZScanner:
 
             # Fallback: try other common attributes
             elif hasattr(ocr_response, 'text'):
-                return ocr_response.text
+                return html.unescape(ocr_response.text)
             elif hasattr(ocr_response, 'content'):
-                return ocr_response.content
+                return html.unescape(ocr_response.content)
             elif isinstance(ocr_response, dict):
                 # If it's a dictionary, try common keys
                 for key in ['text', 'content', 'ocr_text', 'result']:
                     if key in ocr_response:
-                        return ocr_response[key]
+                        return html.unescape(str(ocr_response[key]))
 
             # If we can't find the text, convert to string and try to parse
             response_str = str(ocr_response)
+            response_str = html.unescape(response_str)
             print(f"⚠️ OCR response format: {response_str[:200]}", flush=True)
 
             # Try to find MRZ lines
@@ -216,7 +223,7 @@ class MistralMRZScanner:
 
         except Exception as e:
             print(f"❌ Error extracting OCR text: {str(e)}", flush=True)
-            return str(ocr_response)
+            return html.unescape(str(ocr_response))
 
     def _extract_mrz_lines(self, text: str) -> list:
         """Extract MRZ lines from text"""
@@ -232,6 +239,16 @@ class MistralMRZScanner:
             # Clean the line
             line = line.strip()
 
+            # Check for concatenated MRZ (88+ characters)
+            if len(line) >= 88 and (line.startswith('P<') or 'P<' in line[:5]):
+                # Split into two 44-character lines
+                line1 = line[:44]
+                line2 = line[44:88]
+                mrz_lines.append(line1)
+                mrz_lines.append(line2)
+                print(f"🔀 Split concatenated MRZ: {len(line)} chars → 2 lines", flush=True)
+                continue
+
             # MRZ lines are exactly 44 characters and contain multiple '<' characters
             if len(line) == 44:
                 # Check if line contains typical MRZ patterns
@@ -239,12 +256,23 @@ class MistralMRZScanner:
                     mrz_lines.append(line)
             # Also check for lines that start with P< (first MRZ line)
             elif line.startswith('P<') and len(line) >= 40:
-                # Pad or trim to exactly 44 characters
-                if len(line) < 44:
-                    line = line.ljust(44, '<')
-                elif len(line) > 44:
-                    line = line[:44]
-                mrz_lines.append(line)
+                # Check if this is concatenated (line 1 + line 2 together)
+                if len(line) >= 80:
+                    # Definitely concatenated, split it
+                    line1 = self._normalize_mrz_line(line[:44])
+                    line2 = self._normalize_mrz_line(line[44:88])
+                    mrz_lines.append(line1)
+                    mrz_lines.append(line2)
+                    print(f"🔀 Split long line: {len(line)} chars → 2 lines", flush=True)
+                else:
+                    # Pad or trim to exactly 44 characters
+                    if len(line) < 44:
+                        line = line.ljust(44, '<')
+                    elif len(line) > 44 and len(line) < 88:
+                        # This might be concatenated but shorter
+                        # Try to extract 2 lines if we have at least 80 chars
+                        line = line[:44]
+                    mrz_lines.append(line)
 
         print(f"🔍 Found {len(mrz_lines)} potential MRZ lines", flush=True)
         for i, line in enumerate(mrz_lines):
@@ -281,57 +309,178 @@ class MistralMRZScanner:
         """
         import json
         import re
+        import html
 
-        # Create a prompt to extract MRZ lines
-        prompt = f"""You are an expert at reading passport Machine Readable Zones (MRZ).
+        # Decode HTML entities first
+        ocr_text = html.unescape(ocr_text)
 
-The OCR text from a passport is:
-{ocr_text}
+        # Filter out garbage lines (like all zeros)
+        lines = ocr_text.split('\n')
+        filtered_lines = []
+        for line in lines:
+            line = line.strip()
+            # Skip lines that are all the same character repeated
+            if line and not all(c == line[0] for c in line):
+                # Skip lines that don't contain typical MRZ characters
+                if 'P<' in line or '<' in line or any(c.isalpha() for c in line):
+                    filtered_lines.append(line)
 
-Extract the two MRZ lines from this text. MRZ lines for passports (TD3 format) have these characteristics:
-- Exactly 44 characters each
-- Line 1 starts with 'P<' followed by country code and name
-- Line 2 contains passport number, nationality, dates, and check digits
-- Uses '<' as filler character
+        cleaned_ocr_text = '\n'.join(filtered_lines)
+        print(f"🧹 Cleaned OCR text: {cleaned_ocr_text[:200]}", flush=True)
 
-Analyze the text and extract the two MRZ lines. The text may be concatenated or have special characters at the end.
+        # Try manual extraction first (faster and more reliable)
+        manual_result = self._manual_mrz_extraction(cleaned_ocr_text)
+        if manual_result:
+            return manual_result
 
-Return ONLY a JSON object in this exact format (no markdown, no explanation):
-{{"line1": "the first 44-character MRZ line", "line2": "the second 44-character MRZ line"}}"""
+        # Fallback to Mistral if manual extraction fails
+        prompt = f"""Extract passport MRZ lines from this OCR text. Return ONLY valid JSON with no markdown.
+
+OCR Text:
+{cleaned_ocr_text}
+
+Requirements:
+- Extract TWO lines, each EXACTLY 44 characters
+- Line 1 starts with 'P<' (document type + country + name)
+- Line 2 has passport number, nationality, dates
+- Use '<' as filler
+- If concatenated, split at position 44
+- Pad short lines with '<' at the end
+- Truncate long lines to 44 characters
+
+Return this exact JSON format (no markdown):
+{{"line1": "44-char line 1", "line2": "44-char line 2"}}"""
 
         print(f"🔄 Sending to Mistral extraction model...", flush=True)
 
-        # Call Mistral chat API
+        # Call Mistral chat API without response_format (not supported)
         response = self.client.chat.complete(
             model=self.extraction_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
+            messages=[{"role": "user", "content": prompt}]
         )
 
         # Extract content from response
         if hasattr(response, 'choices') and len(response.choices) > 0:
             content = response.choices[0].message.content
-            print(f"📝 Mistral extraction response: {content[:200]}", flush=True)
+            print(f"📝 Mistral response: {content[:300]}", flush=True)
 
-            # Clean and parse JSON
+            if not content or content.strip() == "":
+                raise Exception("Empty response from Mistral extraction model")
+
+            # Aggressively clean the response
             cleaned = content.strip()
-            cleaned = re.sub(r'^```json\s*', '', cleaned)
-            cleaned = re.sub(r'^```\s*', '', cleaned)
-            cleaned = re.sub(r'\s*```$', '', cleaned)
+            # Remove ALL markdown
+            cleaned = re.sub(r'```[a-z]*\s*', '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
             cleaned = cleaned.strip()
+
+            # Try to find JSON object in the response
+            json_match = re.search(r'\{[^}]*"line1"[^}]*"line2"[^}]*\}', cleaned, re.DOTALL)
+            if json_match:
+                cleaned = json_match.group(0)
+
+            if not cleaned:
+                raise Exception("No valid JSON found in Mistral response")
 
             try:
                 result = json.loads(cleaned)
+
+                if "line1" not in result or "line2" not in result:
+                    raise Exception("Missing line1 or line2")
+
+                # Ensure exactly 44 characters
+                result["line1"] = self._normalize_mrz_line(result["line1"])
+                result["line2"] = self._normalize_mrz_line(result["line2"])
+
+                print(f"   Line1 ({len(result['line1'])}): {result['line1']}", flush=True)
+                print(f"   Line2 ({len(result['line2'])}): {result['line2']}", flush=True)
+
                 return result
-            except json.JSONDecodeError as e:
-                print(f"❌ Failed to parse Mistral extraction response as JSON: {e}", flush=True)
-                raise Exception("Mistral extraction model did not return valid JSON")
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"❌ Mistral extraction failed: {e}", flush=True)
+                raise Exception(f"Failed to extract MRZ: {str(e)}")
         else:
             raise Exception("Empty response from Mistral extraction model")
+
+    def _manual_mrz_extraction(self, text: str) -> Optional[Dict]:
+        """Manually extract MRZ lines from text without AI"""
+        import html
+
+        # Decode HTML entities
+        text = html.unescape(text)
+
+        lines = text.split('\n')
+        mrz_candidates = []
+
+        for line in lines:
+            line = line.strip()
+            # Look for lines that start with P< or have MRZ characteristics
+            if line.startswith('P<') or (len(line) >= 40 and '<' in line):
+                mrz_candidates.append(line)
+
+        # Try concatenated format first (most common issue)
+        for line in mrz_candidates:
+            if len(line) >= 80:  # Two lines concatenated (at least 80 chars)
+                line1 = self._normalize_mrz_line(line[:44])
+                line2 = self._normalize_mrz_line(line[44:88])
+
+                print(f"✅ Manual extraction (concatenated {len(line)} chars) succeeded", flush=True)
+                print(f"   Line1 ({len(line1)}): {line1}", flush=True)
+                print(f"   Line2 ({len(line2)}): {line2}", flush=True)
+
+                return {"line1": line1, "line2": line2}
+
+        # Try separate lines
+        if len(mrz_candidates) >= 2:
+            line1 = self._normalize_mrz_line(mrz_candidates[0])
+            line2 = self._normalize_mrz_line(mrz_candidates[1])
+
+            print(f"✅ Manual extraction (separate lines) succeeded", flush=True)
+            print(f"   Line1 ({len(line1)}): {line1}", flush=True)
+            print(f"   Line2 ({len(line2)}): {line2}", flush=True)
+
+            return {"line1": line1, "line2": line2}
+
+        # If we have only 1 candidate, check if it's at least close to concatenated
+        if len(mrz_candidates) == 1:
+            line = mrz_candidates[0]
+            if len(line) >= 70:  # Might be concatenated but with some chars missing
+                line1 = self._normalize_mrz_line(line[:44])
+                # Try to extract second line from remaining text
+                remaining = line[44:]
+                line2 = self._normalize_mrz_line(remaining)
+
+                print(f"✅ Manual extraction (partial concatenated {len(line)} chars) succeeded", flush=True)
+                print(f"   Line1 ({len(line1)}): {line1}", flush=True)
+                print(f"   Line2 ({len(line2)}): {line2}", flush=True)
+
+                return {"line1": line1, "line2": line2}
+
+        print(f"⚠️  Manual extraction found {len(mrz_candidates)} candidates, need 2", flush=True)
+        if mrz_candidates:
+            for i, cand in enumerate(mrz_candidates):
+                print(f"   Candidate {i+1}: {len(cand)} chars - {cand[:50]}...", flush=True)
+        return None
+
+    def _normalize_mrz_line(self, line: str) -> str:
+        """Normalize MRZ line to exactly 44 characters"""
+        import html
+
+        # Decode HTML entities
+        line = html.unescape(line)
+
+        # Remove any whitespace
+        line = line.strip()
+
+        # Convert to uppercase (MRZ standard)
+        line = line.upper()
+
+        # Truncate or pad to exactly 44 characters
+        if len(line) > 44:
+            line = line[:44]
+        elif len(line) < 44:
+            line = line.ljust(44, '<')
+
+        return line
 
     def _validate_mrz_format(self, result: Dict) -> bool:
         """Validate MRZ format (2 lines, 44 chars each)"""
