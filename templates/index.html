@@ -693,23 +693,42 @@
 
             // Get the scanner cutout dimensions and position
             const cutoutRect = scannerCutout.getBoundingClientRect();
-            const videoRect = videoFeed.getBoundingClientRect();
-
-            // Calculate relative position of cutout within video viewport
-            const relativeX = (cutoutRect.left - videoRect.left) / videoRect.width;
-            const relativeY = (cutoutRect.top - videoRect.top) / videoRect.height;
-            const relativeWidth = cutoutRect.width / videoRect.width;
-            const relativeHeight = cutoutRect.height / videoRect.height;
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
 
             // Get actual video dimensions
             const videoWidth = videoFeed.videoWidth;
             const videoHeight = videoFeed.videoHeight;
 
-            // Calculate the crop area from the actual video
-            const sourceX = Math.max(0, relativeX * videoWidth);
-            const sourceY = Math.max(0, relativeY * videoHeight);
-            const sourceWidth = Math.min(videoWidth, relativeWidth * videoWidth);
-            const sourceHeight = Math.min(videoHeight, relativeHeight * videoHeight);
+            // Calculate how the video is rendered with object-fit: cover
+            // The video is scaled to cover the viewport while maintaining aspect ratio
+            const videoAspect = videoWidth / videoHeight;
+            const viewportAspect = viewportWidth / viewportHeight;
+
+            let renderedVideoWidth, renderedVideoHeight, offsetX, offsetY;
+
+            if (videoAspect > viewportAspect) {
+                // Video is wider - it will be scaled to match viewport height
+                // and the sides will be cropped
+                renderedVideoHeight = viewportHeight;
+                renderedVideoWidth = videoHeight * viewportAspect;
+                offsetX = (videoWidth - renderedVideoWidth) / 2;
+                offsetY = 0;
+            } else {
+                // Video is taller - it will be scaled to match viewport width
+                // and the top/bottom will be cropped
+                renderedVideoWidth = viewportWidth;
+                renderedVideoHeight = videoWidth / viewportAspect;
+                offsetX = 0;
+                offsetY = (videoHeight - renderedVideoHeight) / 2;
+            }
+
+            // Calculate the cutout position relative to the rendered video portion
+            const scale = videoWidth / renderedVideoWidth;
+            const sourceX = offsetX + (cutoutRect.left * scale);
+            const sourceY = offsetY + (cutoutRect.top * scale);
+            const sourceWidth = cutoutRect.width * scale;
+            const sourceHeight = cutoutRect.height * scale;
 
             // Set canvas to high resolution for better OCR
             const targetWidth = 1200;
