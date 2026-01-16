@@ -96,11 +96,17 @@ OCR ERROR CORRECTIONS:
 
 CRITICAL: Each line must be EXACTLY 44 characters. Use '<' as filler if needed.
 
-OUTPUT FORMAT:
-Return ONLY this JSON structure with no markdown, no code blocks:
+OUTPUT FORMAT - EXTREMELY IMPORTANT:
+You MUST respond with ONLY the JSON object below. Do NOT add:
+- Any explanation or commentary
+- Markdown code blocks (no ```)
+- Additional text before or after the JSON
+- Newlines or formatting around the JSON
+
+Return EXACTLY this structure and nothing else:
 {"line1": "44-character line 1", "line2": "44-character line 2"}
 
-Example:
+Example of correct response:
 {"line1": "P<UZBBEKTURDIYEVA<<KAMOLA<<<<<<<<<<<<<<<<<<", "line2": "FA12345679UZB0001015F3112250<<<<<<<<<<<<<<08"}"""
 
             # Call Mistral Vision API
@@ -126,7 +132,8 @@ Example:
                 model=self.vision_model,
                 messages=messages,
                 temperature=0.0,  # Zero temperature for deterministic OCR
-                max_tokens=500
+                max_tokens=500,
+                response_format={"type": "json_object"}  # Force JSON output
             )
 
             # Extract response content
@@ -134,15 +141,59 @@ Example:
                 content = response.choices[0].message.content
                 print(f"📥 Received response: {content[:200]}...", flush=True)
 
-                # Clean response (remove markdown if present)
-                cleaned = content.strip()
-                cleaned = re.sub(r'^```json\s*', '', cleaned)
-                cleaned = re.sub(r'^```\s*', '', cleaned)
-                cleaned = re.sub(r'\s*```$', '', cleaned)
-                cleaned = cleaned.strip()
+                # Try multiple extraction methods
+                result = None
 
-                # Parse JSON
-                result = json.loads(cleaned)
+                # Method 1: Try to extract JSON from markdown code blocks
+                json_match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```', content, re.DOTALL)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(1))
+                        print(f"✅ Extracted JSON from markdown code block", flush=True)
+                    except json.JSONDecodeError:
+                        pass
+
+                # Method 2: Try to find JSON object anywhere in the response
+                if not result:
+                    json_match = re.search(r'\{[^{}]*"line1"[^{}]*"line2"[^{}]*\}', content, re.DOTALL)
+                    if json_match:
+                        try:
+                            result = json.loads(json_match.group(0))
+                            print(f"✅ Extracted JSON from response text", flush=True)
+                        except json.JSONDecodeError:
+                            pass
+
+                # Method 3: Try direct JSON parsing after simple cleanup
+                if not result:
+                    try:
+                        cleaned = content.strip()
+                        cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
+                        cleaned = re.sub(r'\s*```$', '', cleaned)
+                        cleaned = cleaned.strip()
+                        result = json.loads(cleaned)
+                        print(f"✅ Parsed JSON after cleanup", flush=True)
+                    except json.JSONDecodeError:
+                        pass
+
+                # Method 4: Fallback - extract line1 and line2 using regex
+                if not result:
+                    print(f"⚠️  JSON parsing failed, trying regex fallback...", flush=True)
+                    print(f"📄 Full response:\n{content}", flush=True)
+
+                    line1_match = re.search(r'"line1"\s*:\s*"([^"]*)"', content)
+                    line2_match = re.search(r'"line2"\s*:\s*"([^"]*)"', content)
+
+                    if line1_match and line2_match:
+                        result = {
+                            "line1": line1_match.group(1),
+                            "line2": line2_match.group(1)
+                        }
+                        print(f"✅ Extracted using regex fallback", flush=True)
+                    else:
+                        raise ValueError(f"Failed to extract MRZ lines. Response: {content[:500]}")
+
+                if not result:
+                    raise ValueError(f"Failed to parse response. Content: {content[:500]}")
 
                 if "line1" not in result or "line2" not in result:
                     raise ValueError("Missing line1 or line2 in response")
