@@ -170,6 +170,8 @@ class MistralMRZScanner:
 
     def _extract_ocr_text(self, ocr_response) -> str:
         """Extract text from Mistral OCR API response"""
+        import html
+
         try:
             # Mistral OCR API returns a response with .pages attribute
             # Each page has a .markdown attribute with the extracted text
@@ -182,6 +184,10 @@ class MistralMRZScanner:
 
                 # Join all text
                 full_text = '\n'.join(all_text)
+
+                # Decode HTML entities (e.g., &lt; -> <, &gt; -> >)
+                full_text = html.unescape(full_text)
+
                 print(f"📝 Extracted markdown text: {full_text[:200]}", flush=True)
 
                 # Find MRZ lines in the text
@@ -193,17 +199,18 @@ class MistralMRZScanner:
 
             # Fallback: try other common attributes
             elif hasattr(ocr_response, 'text'):
-                return ocr_response.text
+                return html.unescape(ocr_response.text)
             elif hasattr(ocr_response, 'content'):
-                return ocr_response.content
+                return html.unescape(ocr_response.content)
             elif isinstance(ocr_response, dict):
                 # If it's a dictionary, try common keys
                 for key in ['text', 'content', 'ocr_text', 'result']:
                     if key in ocr_response:
-                        return ocr_response[key]
+                        return html.unescape(str(ocr_response[key]))
 
             # If we can't find the text, convert to string and try to parse
             response_str = str(ocr_response)
+            response_str = html.unescape(response_str)
             print(f"⚠️ OCR response format: {response_str[:200]}", flush=True)
 
             # Try to find MRZ lines
@@ -216,7 +223,7 @@ class MistralMRZScanner:
 
         except Exception as e:
             print(f"❌ Error extracting OCR text: {str(e)}", flush=True)
-            return str(ocr_response)
+            return html.unescape(str(ocr_response))
 
     def _extract_mrz_lines(self, text: str) -> list:
         """Extract MRZ lines from text"""
@@ -288,15 +295,29 @@ class MistralMRZScanner:
 The OCR text from a passport is:
 {ocr_text}
 
-Extract the two MRZ lines from this text. MRZ lines for passports (TD3 format) have these characteristics:
-- Exactly 44 characters each
-- Line 1 starts with 'P<' followed by country code and name
-- Line 2 contains passport number, nationality, dates, and check digits
+This text contains passport MRZ data. MRZ lines for passports (TD3 format) have these characteristics:
+- Exactly 44 characters each (VERY IMPORTANT - must be exactly 44)
+- Line 1: Starts with 'P<' followed by country code (3 chars) and name (remainder filled with '<')
+- Line 2: Passport number (9 chars), check digit (1), nationality (3), DOB (6), check (1), sex (1), expiry (6), check (1), personal# (14), check (1), final check (1)
 - Uses '<' as filler character
 
-Analyze the text and extract the two MRZ lines. The text may be concatenated or have special characters at the end.
+The text may be:
+- Two separate lines
+- Concatenated into one line (split it into two 44-character segments)
+- Have extra characters at the end (remove them)
+- Be incomplete (pad with '<' to make exactly 44 characters)
 
-Return ONLY a JSON object in this exact format (no markdown, no explanation):
+IMPORTANT RULES:
+1. Each line MUST be EXACTLY 44 characters
+2. If text is concatenated, split at character 44
+3. If line is shorter than 44, pad with '<' at the end
+4. If line is longer than 44, truncate to exactly 44 characters
+
+Example:
+Input: "P<INDKUMAR<<RAJESH<<<<<<<<<<<<<<<<<<<<<<<<<<A1234567<8IND8901011M2512315<<<<<<<<<<<6"
+Output: {{"line1": "P<INDKUMAR<<RAJESH<<<<<<<<<<<<<<<<<<<<<<<", "line2": "A1234567<8IND8901011M2512315<<<<<<<<<<<6"}}
+
+Return ONLY a JSON object in this exact format (no markdown, no code blocks, no explanation):
 {{"line1": "the first 44-character MRZ line", "line2": "the second 44-character MRZ line"}}"""
 
         print(f"🔄 Sending to Mistral extraction model...", flush=True)
@@ -309,26 +330,47 @@ Return ONLY a JSON object in this exact format (no markdown, no explanation):
                     "role": "user",
                     "content": prompt
                 }
-            ]
+            ],
+            response_format={"type": "json_object"}  # Force JSON response
         )
 
         # Extract content from response
         if hasattr(response, 'choices') and len(response.choices) > 0:
             content = response.choices[0].message.content
-            print(f"📝 Mistral extraction response: {content[:200]}", flush=True)
+            print(f"📝 Mistral extraction response: {content[:300]}", flush=True)
+
+            if not content or content.strip() == "":
+                print(f"❌ Empty response from Mistral extraction model", flush=True)
+                raise Exception("Empty response from Mistral extraction model")
 
             # Clean and parse JSON
             cleaned = content.strip()
-            cleaned = re.sub(r'^```json\s*', '', cleaned)
-            cleaned = re.sub(r'^```\s*', '', cleaned)
-            cleaned = re.sub(r'\s*```$', '', cleaned)
+            # Remove markdown code blocks if present
+            cleaned = re.sub(r'^```json\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'^```\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
             cleaned = cleaned.strip()
+
+            if not cleaned or cleaned == "":
+                print(f"❌ Cleaned response is empty", flush=True)
+                raise Exception("Mistral extraction model returned empty JSON")
 
             try:
                 result = json.loads(cleaned)
+
+                # Validate that we have line1 and line2
+                if "line1" not in result or "line2" not in result:
+                    print(f"❌ Missing line1 or line2 in response: {result}", flush=True)
+                    raise Exception("Mistral extraction model did not return line1 and line2")
+
+                # Log the extracted lines
+                print(f"   Line1 ({len(result['line1'])} chars): {result['line1']}", flush=True)
+                print(f"   Line2 ({len(result['line2'])} chars): {result['line2']}", flush=True)
+
                 return result
             except json.JSONDecodeError as e:
                 print(f"❌ Failed to parse Mistral extraction response as JSON: {e}", flush=True)
+                print(f"   Cleaned text: {cleaned[:200]}", flush=True)
                 raise Exception("Mistral extraction model did not return valid JSON")
         else:
             raise Exception("Empty response from Mistral extraction model")
