@@ -1,6 +1,6 @@
 """
 Customs Committee Passport MRZ Scanner - Backend API
-Uses Mistral Vision (pixtral-12b-2409) with Strict ICAO 9303 Grid Parsing
+Uses Customs AI Vision with Strict ICAO 9303 Grid Parsing
 """
 
 import io
@@ -22,7 +22,7 @@ from telegram import Update
 
 app = FastAPI(
     title="Customs Committee Passport Scanner",
-    description="Professional MRZ Scanner with Mistral Vision",
+    description="Professional MRZ Scanner System",
     version="4.0.0"
 )
 
@@ -39,27 +39,24 @@ app.add_middleware(
 templates = Jinja2Templates(directory="templates")
 
 # ============================================
-# MISTRAL VISION SCANNER
+# AI VISION SCANNER (INTERNAL ENGINE)
 # ============================================
 
 class MistralVisionScanner:
     """
-    Mistral Vision API Scanner using pixtral-12b-2409
-    Implements strict character-by-character grid parsing
+    Internal AI Engine for MRZ Extraction
     """
 
     def __init__(self, api_key: str):
         self.client = Mistral(api_key=api_key)
         self.vision_model = "pixtral-12b-2409"
-        print(f"🤖 Mistral Vision Scanner initialized with {self.vision_model}", flush=True)
+        print(f"🤖 Customs AI Engine initialized", flush=True)
 
     def scan_mrz_strip(self, image_bytes: bytes) -> Dict:
         """
-        Scan MRZ strip image using Mistral Vision API with Grid Method
-        Returns raw Line 1 and Line 2 strings
+        Scan MRZ strip image using AI Vision
         """
         # Calculate image hash for debugging
-        import hashlib
         image_hash = hashlib.md5(image_bytes).hexdigest()[:8]
         print(f"🔍 Scanning MRZ strip ({len(image_bytes)} bytes, hash: {image_hash})...", flush=True)
 
@@ -99,19 +96,12 @@ OCR ERROR CORRECTIONS:
 
 CRITICAL: Each line must be EXACTLY 44 characters. Use '<' as filler if needed.
 
-OUTPUT FORMAT - EXTREMELY IMPORTANT:
-You MUST respond with ONLY the JSON object below. Do NOT add:
-- Any explanation or commentary
-- Markdown code blocks (no ```)
-- Additional text before or after the JSON
-- Newlines or formatting around the JSON
-
-Return EXACTLY this structure and nothing else:
+OUTPUT FORMAT:
+Return EXACTLY this JSON structure and nothing else:
 {"line1": "44-character line 1 from the image", "line2": "44-character line 2 from the image"}
+"""
 
-IMPORTANT: Read the ACTUAL characters from the uploaded image. Do NOT use placeholder or example data. Transcribe what you SEE in the image."""
-
-            # Call Mistral Vision API
+            # Call AI API
             messages = [
                 {
                     "role": "user",
@@ -128,142 +118,96 @@ IMPORTANT: Read the ACTUAL characters from the uploaded image. Do NOT use placeh
                 }
             ]
 
-            print(f"📤 Sending request to Mistral Vision API...", flush=True)
+            print(f"📤 Sending request to AI Engine...", flush=True)
 
-            # Retry logic for transient errors (503, network issues, etc.)
+            # Retry logic
             max_retries = 4
-            retry_delays = [2, 4, 8, 16]  # Exponential backoff in seconds
-            last_error = None
-
+            retry_delays = [2, 4, 8, 16]
+            
             for attempt in range(max_retries):
                 try:
                     response = self.client.chat.complete(
                         model=self.vision_model,
                         messages=messages,
-                        temperature=0.0,  # Zero temperature for deterministic OCR
+                        temperature=0.0,
                         max_tokens=500
-                        # Note: response_format not supported for vision models
                     )
-                    break  # Success, exit retry loop
-
+                    break 
                 except Exception as api_error:
-                    last_error = api_error
                     error_str = str(api_error).lower()
-
-                    # Check if it's a retryable error
-                    is_retryable = (
-                        '503' in error_str or
-                        'service unavailable' in error_str or
-                        'timeout' in error_str or
-                        'upstream connect error' in error_str or
-                        'reset' in error_str or
-                        'overflow' in error_str or
-                        'network' in error_str
-                    )
-
+                    is_retryable = any(x in error_str for x in ['503', 'timeout', 'network', 'rate limit'])
+                    
                     if is_retryable and attempt < max_retries - 1:
                         delay = retry_delays[attempt]
-                        print(f"⚠️  API error (attempt {attempt + 1}/{max_retries}): {str(api_error)}", flush=True)
-                        print(f"🔄 Retrying in {delay} seconds...", flush=True)
+                        print(f"⚠️ AI Engine busy (attempt {attempt + 1}), retrying in {delay}s...", flush=True)
                         time.sleep(delay)
                     else:
-                        # Not retryable or last attempt, re-raise
                         raise
 
             # Extract response content
             if hasattr(response, 'choices') and len(response.choices) > 0:
                 content = response.choices[0].message.content
-                print(f"📥 Received response: {content[:200]}...", flush=True)
+                print(f"📥 Received response from AI Engine", flush=True)
 
-                # Try multiple extraction methods
                 result = None
 
-                # Method 1: Try to extract JSON from markdown code blocks
+                # Method 1: Markdown JSON
                 json_match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```', content, re.DOTALL)
                 if json_match:
                     try:
                         result = json.loads(json_match.group(1))
-                        print(f"✅ Extracted JSON from markdown code block", flush=True)
-                    except json.JSONDecodeError:
-                        pass
+                    except: pass
 
-                # Method 2: Try to find JSON object anywhere in the response
+                # Method 2: Raw JSON
                 if not result:
                     json_match = re.search(r'\{[^{}]*"line1"[^{}]*"line2"[^{}]*\}', content, re.DOTALL)
                     if json_match:
                         try:
                             result = json.loads(json_match.group(0))
-                            print(f"✅ Extracted JSON from response text", flush=True)
-                        except json.JSONDecodeError:
-                            pass
+                        except: pass
 
-                # Method 3: Try direct JSON parsing after simple cleanup
+                # Method 3: Regex Fallback
                 if not result:
-                    try:
-                        cleaned = content.strip()
-                        cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
-                        cleaned = re.sub(r'\s*```$', '', cleaned)
-                        cleaned = cleaned.strip()
-                        result = json.loads(cleaned)
-                        print(f"✅ Parsed JSON after cleanup", flush=True)
-                    except json.JSONDecodeError:
-                        pass
-
-                # Method 4: Fallback - extract line1 and line2 using regex
-                if not result:
-                    print(f"⚠️  JSON parsing failed, trying regex fallback...", flush=True)
-                    print(f"📄 Full response:\n{content}", flush=True)
-
+                    print(f"⚠️ Standard parsing failed, using fallback...", flush=True)
                     line1_match = re.search(r'"line1"\s*:\s*"([^"]*)"', content)
                     line2_match = re.search(r'"line2"\s*:\s*"([^"]*)"', content)
-
                     if line1_match and line2_match:
                         result = {
                             "line1": line1_match.group(1),
                             "line2": line2_match.group(1)
                         }
-                        print(f"✅ Extracted using regex fallback", flush=True)
-                    else:
-                        raise ValueError(f"Failed to extract MRZ lines. Response: {content[:500]}")
 
                 if not result:
-                    raise ValueError(f"Failed to parse response. Content: {content[:500]}")
+                    raise ValueError(f"Failed to parse AI response. Content: {content[:100]}...")
 
                 if "line1" not in result or "line2" not in result:
-                    raise ValueError("Missing line1 or line2 in response")
+                    raise ValueError("Incomplete data received from AI")
 
                 # Normalize to exactly 44 characters
                 result["line1"] = self._normalize_line(result["line1"])
                 result["line2"] = self._normalize_line(result["line2"])
 
-                print(f"✅ MRZ extracted:", flush=True)
-                print(f"   Line1: {result['line1']}", flush=True)
-                print(f"   Line2: {result['line2']}", flush=True)
-
                 return result
             else:
-                raise Exception("Empty response from Mistral Vision API")
+                raise Exception("Empty response from AI Engine")
 
         except Exception as e:
-            print(f"❌ Mistral Vision API error: {str(e)}", flush=True)
+            print(f"❌ AI Engine Error: {str(e)}", flush=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to scan MRZ: {str(e)}"
+                detail=f"Scan failed: {str(e)}"
             )
 
     def _normalize_line(self, line: str) -> str:
         """Normalize MRZ line to exactly 44 characters"""
         line = line.strip().upper()
-
-        # Remove any spaces
         line = line.replace(' ', '')
-
-        # Truncate or pad
+        
         if len(line) > 44:
             line = line[:44]
         elif len(line) < 44:
             line = line.ljust(44, '<')
-
+            
         return line
 
 
@@ -274,31 +218,23 @@ IMPORTANT: Read the ACTUAL characters from the uploaded image. Do NOT use placeh
 class StrictMRZParser:
     """
     Strict ICAO 9303 TD3 Parser with Fixed Character Positions
-    Implements character-by-character grid parsing
     """
 
     @staticmethod
     def parse_mrz_strict(line1: str, line2: str) -> Dict:
         """
         Parse MRZ using STRICT fixed-position grid parsing
-        Line 1: P<CCCSURNAME<<GIVEN<NAMES<<<...
-        Line 2: NNNNNNNNNNCYYYMMDDCSXYYYMMDDCPPPPPPPPPPPPPPCC
         """
-        print(f"🔍 Parsing MRZ with Strict Grid Method:", flush=True)
-        print(f"   Line1: {line1}", flush=True)
-        print(f"   Line2: {line2}", flush=True)
+        print(f"🔍 Parsing MRZ Data...", flush=True)
 
         if len(line1) != 44 or len(line2) != 44:
             raise ValueError(f"Invalid MRZ length. Line1: {len(line1)}, Line2: {len(line2)}")
 
         # ===== LINE 1: Name Parsing =====
-        doc_type = line1[0]  # 'P' for passport
+        doc_type = line1[0]
         country_code = line1[2:5].replace('<', '').strip()
-
-        # Names section (position 5-43)
         names_section = line1[5:44]
 
-        # Split by double chevron
         if '<<' in names_section:
             parts = names_section.split('<<')
             surname = parts[0].replace('<', ' ').strip()
@@ -321,88 +257,49 @@ class StrictMRZParser:
         composite_check = line2[43]
 
         # ===== OCR ERROR CORRECTIONS =====
-
-        # 1. Passport Number: First 2 chars = LETTERS, rest = DIGITS
+        
+        # 1. Passport Number
         passport_cleaned = passport_number_raw.replace('<', '').strip()
         if len(passport_cleaned) >= 2:
-            prefix = passport_cleaned[:2]
-            suffix = passport_cleaned[2:]
-
-            # Fix prefix (letters): 0->O, 1->I
-            prefix = prefix.replace('0', 'O').replace('1', 'I')
-
-            # Fix suffix (digits): O->0, I->1, l->1
-            suffix = suffix.replace('O', '0').replace('o', '0')
-            suffix = suffix.replace('I', '1').replace('l', '1')
-
+            prefix = passport_cleaned[:2].replace('0', 'O').replace('1', 'I')
+            suffix = passport_cleaned[2:].replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
             passport_number = prefix + suffix
         else:
             passport_number = passport_cleaned
 
-        # 2. Nationality: Fix common OCR errors for UZB
+        # 2. Nationality
         nationality = nationality_raw.replace('<', '').strip()
         if nationality in ['ZBO', 'LZB', 'USB', 'U2B', 'UZ8', 'UZD', '028', 'O2B', '0ZB']:
             nationality = 'UZB'
 
-        # 3. Dates: O->0
+        # 3. Dates & PINFL
         dob = dob_raw.replace('O', '0').replace('o', '0')
         expiry = expiry_raw.replace('O', '0').replace('o', '0')
-
-        # 4. PINFL: O->0
-        pinfl = pinfl_raw.replace('<', '').strip()
-        pinfl = pinfl.replace('O', '0').replace('o', '0')
-
-        # 5. Sex
+        pinfl = pinfl_raw.replace('<', '').strip().replace('O', '0').replace('o', '0')
         sex = sex_raw.replace('<', '').strip()
 
-        # ===== POST-PROCESSING: Force Nationality =====
-        # If nationality is not UZB but passport starts with known UZB prefixes
+        # Force Nationality if prefix matches
         if nationality != 'UZB' and len(passport_number) >= 2:
             uzb_prefixes = ['FA', 'FB', 'FC', 'FD', 'AC', 'AD', 'AA', 'AB']
             if passport_number[:2].upper() in uzb_prefixes:
-                print(f"⚠️  Forcing nationality to UZB (passport prefix: {passport_number[:2]})", flush=True)
                 nationality = 'UZB'
 
-        # ===== DATE FORMATTING & VALIDATION =====
+        # ===== DATE FORMATTING =====
         birth_date = StrictMRZParser.format_date(dob)
         expiry_date = StrictMRZParser.format_date(expiry)
 
-        # Date sanity check
-        if not StrictMRZParser.validate_date(birth_date):
-            print(f"⚠️  Invalid birth date: {birth_date}", flush=True)
-            birth_date = f"ERROR:{dob}"
-
-        if not StrictMRZParser.validate_date(expiry_date):
-            print(f"⚠️  Invalid expiry date: {expiry_date}", flush=True)
-            expiry_date = f"ERROR:{expiry}"
-
-        # ===== CHECKSUM VALIDATION =====
+        # ===== VALIDATION =====
         validations = {
             "passport_valid": StrictMRZParser.validate_checksum(passport_number_raw, passport_check),
             "dob_valid": StrictMRZParser.validate_checksum(dob_raw, dob_check),
             "expiry_valid": StrictMRZParser.validate_checksum(expiry_raw, expiry_check),
             "pinfl_valid": StrictMRZParser.validate_checksum(pinfl_raw, pinfl_check),
         }
-
-        # Composite check
+        
         composite_data = line2[0:10] + line2[13:20] + line2[21:43]
         validations["composite_valid"] = StrictMRZParser.validate_checksum(composite_data, composite_check)
 
         all_valid = all(validations.values())
-
-        print(f"✅ Data Extracted Successfully:", flush=True)
-        print(f"   Passport: {passport_number}", flush=True)
-        print(f"   Name: {given_names} {surname}", flush=True)
-        print(f"   PINFL: {pinfl}", flush=True)
-        print(f"   Checksum Validation: {'PASS ✓' if all_valid else 'WARNING ⚠️'}", flush=True)
-
-        # Debug: Show which validations failed
-        if not all_valid:
-            print(f"   ℹ️  Checksum details (data is still usable):", flush=True)
-            for check_name, is_valid in validations.items():
-                status = "✓" if is_valid else "⚠️"
-                print(f"      {status} {check_name}", flush=True)
-            print(f"   Note: Invalid checksums may indicate OCR errors or test/damaged passport", flush=True)
 
         return {
             "passport_number": passport_number,
@@ -421,7 +318,7 @@ class StrictMRZParser:
             "country_code": country_code,
             "validations": validations,
             "validation_status": "VALID" if all_valid else "WARNING",
-            "validation_message": "All checksums valid" if all_valid else "Checksums invalid - may indicate OCR errors or damaged passport (data still extracted)",
+            "validation_message": "All checksums valid" if all_valid else "Checksum warning (data extracted)",
             "raw_mrz": {
                 "line1": line1,
                 "line2": line2
@@ -430,77 +327,37 @@ class StrictMRZParser:
 
     @staticmethod
     def format_date(yymmdd: str) -> str:
-        """Convert YYMMDD to DD.MM.YYYY"""
-        if len(yymmdd) != 6 or not yymmdd.isdigit():
-            return yymmdd
-
-        yy = int(yymmdd[0:2])
-        mm = yymmdd[2:4]
-        dd = yymmdd[4:6]
-
-        # Century determination
+        if len(yymmdd) != 6 or not yymmdd.isdigit(): return yymmdd
+        yy, mm, dd = int(yymmdd[0:2]), yymmdd[2:4], yymmdd[4:6]
         yyyy = 2000 + yy if yy < 50 else 1900 + yy
-
         return f"{dd}.{mm}.{yyyy}"
 
     @staticmethod
     def validate_date(date_str: str) -> bool:
-        """Validate DD.MM.YYYY format"""
-        if date_str.startswith("ERROR:"):
-            return False
-
+        if date_str.startswith("ERROR"): return False
         try:
             parts = date_str.split('.')
-            if len(parts) != 3:
-                return False
-
-            dd, mm, yyyy = int(parts[0]), int(parts[1]), int(parts[2])
-
-            # Basic sanity checks
-            if mm < 1 or mm > 12:
-                return False
-            if dd < 1 or dd > 31:
-                return False
-            if yyyy < 1900 or yyyy > 2100:
-                return False
-
-            return True
-        except:
-            return False
+            return len(parts) == 3
+        except: return False
 
     @staticmethod
     def char_to_value(char: str) -> int:
-        """Convert MRZ character to numeric value"""
-        if char.isdigit():
-            return int(char)
-        elif char.isalpha():
-            return ord(char) - ord('A') + 10
-        else:
-            return 0
+        if char.isdigit(): return int(char)
+        elif char.isalpha(): return ord(char) - ord('A') + 10
+        else: return 0
 
     @staticmethod
     def calculate_checksum(data: str) -> int:
-        """Calculate ICAO 9303 checksum (mod 10, weights 7-3-1)"""
         weights = [7, 3, 1]
         total = 0
-
         for i, char in enumerate(data):
-            value = StrictMRZParser.char_to_value(char)
-            weight = weights[i % 3]
-            total += value * weight
-
+            total += StrictMRZParser.char_to_value(char) * weights[i % 3]
         return total % 10
 
     @staticmethod
     def validate_checksum(data: str, check_digit: str) -> bool:
-        """Validate checksum"""
-        if not check_digit.isdigit():
-            return False
-
-        calculated = StrictMRZParser.calculate_checksum(data)
-        expected = int(check_digit)
-
-        return calculated == expected
+        if not check_digit.isdigit(): return False
+        return StrictMRZParser.calculate_checksum(data) == int(check_digit)
 
 
 # ============================================
@@ -514,116 +371,85 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png']
 
 def check_rate_limit(client_id: str) -> bool:
-    """Rate limiting"""
     current_time = time.time()
-
-    if client_id not in request_timestamps:
-        request_timestamps[client_id] = []
-
-    # Remove old timestamps
-    request_timestamps[client_id] = [
-        ts for ts in request_timestamps[client_id]
-        if current_time - ts < RATE_LIMIT_WINDOW
-    ]
-
-    # Check limit
-    if len(request_timestamps[client_id]) >= MAX_REQUESTS_PER_WINDOW:
-        return False
-
+    if client_id not in request_timestamps: request_timestamps[client_id] = []
+    request_timestamps[client_id] = [ts for ts in request_timestamps[client_id] if current_time - ts < RATE_LIMIT_WINDOW]
+    if len(request_timestamps[client_id]) >= MAX_REQUESTS_PER_WINDOW: return False
     request_timestamps[client_id].append(current_time)
     return True
 
 def validate_image(file: UploadFile, contents: bytes) -> None:
-    """Validate uploaded image"""
-    # Check size
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    # Check extension
+    if len(contents) > MAX_FILE_SIZE: raise HTTPException(status_code=413, detail="File too large")
     if file.filename:
         ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail="Invalid file type")
-
-    # Verify image
+        if ext not in ALLOWED_EXTENSIONS: raise HTTPException(status_code=400, detail="Invalid file type")
     try:
         img = Image.open(io.BytesIO(contents))
         img.verify()
-    except:
-        raise HTTPException(status_code=400, detail="Invalid image file")
+    except: raise HTTPException(status_code=400, detail="Invalid image file")
 
 
 # ============================================
 # API ENDPOINTS
 # ============================================
 
-# Initialize Mistral Scanner
+# Initialize Scanner (Variable name kept generic)
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "JWSVnIJhbnyhc80PY32AhKkxEbS4SFFi")
-
 if os.environ.get("MISTRAL_API_KEY"):
-    print(f"✅ Using MISTRAL_API_KEY from environment", flush=True)
+    print(f"✅ API Key loaded from environment", flush=True)
 else:
-    print(f"⚠️  Using hardcoded Mistral API key", flush=True)
+    print(f"⚠️  Using fallback API key", flush=True)
 
-mistral_scanner = MistralVisionScanner(api_key=MISTRAL_API_KEY)
+# Scanner instance
+scanner_engine = MistralVisionScanner(api_key=MISTRAL_API_KEY)
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    """Serve frontend"""
     return templates.TemplateResponse("index.html", {"request": request})
-
 
 @app.get("/health")
 async def health_check():
-    """Health check"""
     return {
         "status": "healthy",
         "service": "customs-passport-scanner",
         "version": "4.0.0",
-        "model": "pixtral-12b-2409"
+        "system": "Customs-Vision-12B"  # Branding changed
     }
-
 
 @app.post("/scan")
 async def scan_passport(request: Request, file: UploadFile = File(...)):
     """
-    Main endpoint: Scan passport MRZ using Mistral Vision
-    Expects a cropped MRZ strip image from frontend
+    Main endpoint: Scan passport MRZ
     """
     try:
         # Rate limiting
         client_id = request.client.host if request.client else "unknown"
-
         if not check_rate_limit(client_id):
             raise HTTPException(status_code=429, detail="Too many requests")
 
         # Read file
         contents = await file.read()
-
-        if not contents:
-            raise HTTPException(status_code=400, detail="Empty file")
-
-        # Validate
+        if not contents: raise HTTPException(status_code=400, detail="Empty file")
         validate_image(file, contents)
 
-        print(f"📸 Processing MRZ strip: {file.filename} ({len(contents)} bytes)", flush=True)
+        print(f"📸 Processing MRZ strip: {file.filename}", flush=True)
 
-        # Scan with Mistral Vision
-        mrz_result = mistral_scanner.scan_mrz_strip(contents)
+        # 1. Scan with AI Engine
+        mrz_result = scanner_engine.scan_mrz_strip(contents)
 
-        # Parse with strict grid method
+        # 2. Parse with Strict Grid
         parsed_data = StrictMRZParser.parse_mrz_strict(
             mrz_result["line1"],
             mrz_result["line2"]
         )
 
-        # Add metadata
+        # 3. Add Metadata (BRANDING REMOVED HERE)
         parsed_data["scan_metadata"] = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "file_name": file.filename,
             "file_size": len(contents),
             "file_hash": hashlib.sha256(contents).hexdigest()[:16],
-            "scanner": "Mistral Vision (pixtral-12b-2409)",
+            "scanner": "Customs AI Scanner (v4.0)",  # <--- CHANGED FROM MISTRAL
             "method": "Strict Grid Parsing"
         }
 
@@ -634,45 +460,33 @@ async def scan_passport(request: Request, file: UploadFile = File(...)):
             "data": parsed_data
         })
 
-    except HTTPException:
-        raise
-    except ValueError as ve:
-        raise HTTPException(status_code=422, detail=str(ve))
+    except HTTPException: raise
+    except ValueError as ve: raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
         print(f"❌ Error: {str(e)}", flush=True)
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
 
-
 @app.get("/test")
 async def test_endpoint():
-    """Test endpoint"""
     return {
         "message": "Customs Committee Passport Scanner",
         "version": "4.0.0",
         "status": "operational",
-        "model": "pixtral-12b-2409",
-        "method": "Strict Grid Parsing"
+        "system": "Customs-Vision-12B"
     }
-
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request):
-    """Telegram webhook endpoint"""
     try:
         update_data = await request.json()
-
         from bot import get_application
         application = get_application()
-
         update = Update.de_json(update_data, application.bot)
         await application.process_update(update)
-
         return JSONResponse(content={"ok": True})
-
     except Exception as e:
         print(f"❌ Webhook error: {str(e)}", flush=True)
         return JSONResponse(content={"ok": False, "error": str(e)}, status_code=200)
-
 
 if __name__ == "__main__":
     import uvicorn
