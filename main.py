@@ -394,7 +394,7 @@ def validate_image(file: UploadFile, contents: bytes) -> None:
 # ============================================
 
 # Initialize Scanner (Variable name kept generic)
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "JWSVnIJhbnyhc80PY32AhKkxEbS4SFFi")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "------------------------------")
 if os.environ.get("MISTRAL_API_KEY"):
     print(f"✅ API Key loaded from environment", flush=True)
 else:
